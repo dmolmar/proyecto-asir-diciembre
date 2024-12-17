@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: uploads-pvc
+spec:
+  accessModes:
+    - ReadWriteMany # Or ReadWriteOnce, depending on your storage class and needs
+  resources:
+    requests:
+      storage: 5Gi  # Adjust storage size as needed
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: temp-uploads-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi

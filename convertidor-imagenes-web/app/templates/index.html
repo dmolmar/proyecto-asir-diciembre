@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Conversor de Imágenes</title>
+    <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+</head>
+<body>
+    <h1>Conversor de Imágenes</h1>
+    <p class="error"></p>
+    <form method="post" enctype="multipart/form-data" id="uploadForm">
+        <div class="drop-area" id="drop-area">
+            <p>Arrastra y suelta las imágenes aquí o haz clic para seleccionar</p>
+            <input type="file" name="files" multiple accept="image/*" id="fileInput" style="display: none;">
+        </div>
+        <label for="quality">Calidad predeterminada:</label>
+        <input type="range" id="quality" name="quality" min="1" max="100" value="95">
+        <span id="qualityValue">95</span>
+        <label for="resolution">Resolución predeterminada:</label>
+        <input type="range" id="resolution" name="resolution" min="1" max="100" value="100">
+        <span id="resolutionValue">100</span>
+        <label for="output_format">Formato de Salida predeterminado:</label>
+        <select name="output_format" id="output_format">
+            <option value="original">Original</option>
+            <option value="png">PNG</option>
+            <option value="jpg">JPG</option>
+            <option value="webp">WebP</option>
+            <option value="avif">AVIF</option>
+            <option value="bmp">BMP</option>
+            <option value="tiff">TIFF</option>
+            <option value="ico">ICO</option>
+        </select>
+        <button type="button" id="convertButton">Convertir</button>
+    </form>
+    <form id="loginForm">
+        <input type="text" id="username" placeholder="Username" required>
+        <input type="password" id="password" placeholder="Password" required>
+        <button type="submit">Login</button>
+    </form>
+    <button id="logoutButton" style="display: none;">Logout</button>
+    <div id="progress-container">
+        <div id="progress-bar"></div>
+        <p id="progress-text">Procesando imágenes...</p>
+    </div>
+    <div id="results-container">
+        <h2>Archivos Seleccionados</h2>
+        <ul id="files-list">
+        </ul>
+    </div>
+    <script>
+        const qualityInput = document.getElementById('quality');
+        const qualityValue = document.getElementById('qualityValue');
+        const resolutionInput = document.getElementById('resolution');
+        const resolutionValue = document.getElementById('resolutionValue');
+        const dropArea = document.getElementById('drop-area');
+        const fileInput = document.getElementById('fileInput');
+        const progressBar = document.getElementById('progress-bar');
+        const progressText = document.getElementById('progress-text');
+        const progressContainer = document.getElementById('progress-container');
+        const filesList = document.getElementById('files-list');
+        const uploadForm = document.getElementById('uploadForm');
+        const convertButton = document.getElementById('convertButton');
+        const errorElement = document.querySelector('.error');
+        let uploadedFiles = {};
+        let jobIds = [];
+        let completedImages = 0; // Number of completed images, not jobs
+        let isProcessing = false;
+        let processedFiles = {};
+        const loginForm = document.getElementById('loginForm');
+        const logoutButton = document.getElementById('logoutButton');
+        let totalImagesToProcess = 0; // Total number of images to be processed
+
+        // Function to check if the user is logged in
+        function isLoggedIn() {
+            return localStorage.getItem('jwtToken') !== null;
+        }
+
+        // Function to show/hide elements based on login status
+        function updateUI() {
+            if (isLoggedIn()) {
+                loginForm.style.display = 'none';
+                logoutButton.style.display = 'block';
+            } else {
+                loginForm.style.display = 'block';
+                logoutButton.style.display = 'none';
+            }
+        }
+
+        // Call updateUI on page load
+        updateUI();
+
+        qualityInput.addEventListener('input', function () {
+            qualityValue.textContent = qualityInput.value;
+        });
+
+        resolutionInput.addEventListener('input', function () {
+            resolutionValue.textContent = resolutionInput.value;
+        });
+
+        function formatFileSize(bytes) {
+            if (bytes >= 1024 * 1024) {
+                return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+            } else if (bytes >= 1024) {
+                return (bytes / 1024).toFixed(2) + ' KB';
+            }
+            return bytes + ' bytes';
+        }
+
+        function generateThumbnail(file, callback) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    const canvas = document.createElement('canvas');
+                    const MAX_WIDTH = 100;
+                    const MAX_HEIGHT = 100;
+                    let width = img.width;
+                    let height = img.height;
+
+                    if (width > height) {
+                        if (width > MAX_WIDTH) {
+                            height *= MAX_WIDTH / width;
+                            width = MAX_WIDTH;
+                        }
+                    } else {
+                        if (height > MAX_HEIGHT) {
+                            width *= MAX_HEIGHT / height;
+                            height = MAX_HEIGHT;
+                        }
+                    }
+
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+
+                    callback(canvas.toDataURL('image/jpeg'));
+                }
+                img.src = e.target.result;
+            }
+            reader.readAsDataURL(file);
+        }
+
+        function generateFileKey(file) {
+            return `${file.name}-${file.size}-${file.lastModified}`;
+        }
+
+        function displayFileItem(file, index) {
+            const key = generateFileKey(file);
+            let listItem = document.getElementById(`file-item-${key}`);
+            const defaultOutputFormat = document.getElementById('output_format').value;
+
+            if (!listItem) {
+                generateThumbnail(file, function(thumbnail) {
+                    listItem = document.createElement('li');
+                    listItem.classList.add('file-item');
+                    listItem.id = `file-item-${key}`;
+                    listItem.innerHTML = `
+                        <img src="${thumbnail}" alt="Thumbnail" class="thumbnail">
+                        <div class="file-info">
+                            <p><strong>Nombre:</strong> ${file.name}</p>
+                            <p><strong>Extensión:</strong> ${file.name.split('.').pop()}</p>
+                            <p><strong>Tamaño:</strong> ${formatFileSize(file.size)}</p>
+                            <div class="file-settings">
+                                <label for="quality-${key}">Calidad:</label>
+                                <input type="range" id="quality-${key}" name="quality-${key}" min="1" max="100" value="${processedFiles[key] ? processedFiles[key].quality : qualityInput.value}">
+                                <span id="qualityValue-${key}">${processedFiles[key] ? processedFiles[key].quality : qualityInput.value}</span>
+                                <label for="resolution-${key}">Resolución:</label>
+                                <input type="range" id="resolution-${key}" name="resolution-${key}" min="1" max="100" value="${processedFiles[key] ? processedFiles[key].resolution : resolutionInput.value}">
+                                <span id="resolutionValue-${key}">${processedFiles[key] ? processedFiles[key].resolution : resolutionInput.value}</span>
+                                <label for="output_format-${key}">Formato de Salida:</label>
+                                <select name="output_format-${key}" id="output_format-${key}">
+                                    <option value="original" ${processedFiles[key] && processedFiles[key].output_format === 'original' ? 'selected' : (defaultOutputFormat === 'original' ? 'selected' : '')}>Original</option>
+                                    <option value="png" ${processedFiles[key] && processedFiles[key].output_format === 'png' ? 'selected' : (defaultOutputFormat === 'png' ? 'selected' : '')}>PNG</option>
+                                    <option value="jpg" ${processedFiles[key] && processedFiles[key].output_format === 'jpg' ? 'selected' : (defaultOutputFormat === 'jpg' ? 'selected' : '')}>JPG</option>
+                                    <option value="webp" ${processedFiles[key] && processedFiles[key].output_format === 'webp' ? 'selected' : (defaultOutputFormat === 'webp' ? 'selected' : '')}>WebP</option>
+                                    <option value="avif" ${processedFiles[key] && processedFiles[key].output_format === 'avif' ? 'selected' : (defaultOutputFormat === 'avif' ? 'selected' : '')}>AVIF</option>
+                                    <option value="bmp" ${processedFiles[key] && processedFiles[key].output_format === 'bmp' ? 'selected' : (defaultOutputFormat === 'bmp' ? 'selected' : '')}>BMP</option>
+                                    <option value="tiff" ${processedFiles[key] && processedFiles[key].output_format === 'tiff' ? 'selected' : (defaultOutputFormat === 'tiff' ? 'selected' : '')}>TIFF</option>
+                                    <option value="ico" ${processedFiles[key] && processedFiles[key].output_format === 'ico' ? 'selected' : (defaultOutputFormat === 'ico' ? 'selected' : '')}>ICO</option>
+                                </select>
+                            </div>
+                        </div>
+                        <button type="button" class="remove-file" data-key="${key}">X</button>
+                        <div id="download-buttons-${key}" class="download-buttons"></div>
+                    `;
+                    filesList.appendChild(listItem);
+
+                    document.getElementById(`quality-${key}`).addEventListener('input', function() {
+                        document.getElementById(`qualityValue-${key}`).textContent = this.value;
+                    });
+
+                    document.getElementById(`resolution-${key}`).addEventListener('input', function() {
+                        document.getElementById(`resolutionValue-${key}`).textContent = this.value;
+                    });
+
+                    const removeButton = listItem.querySelector('.remove-file');
+                    removeButton.addEventListener('click', function() {
+                        const key = this.getAttribute('data-key');
+                        delete uploadedFiles[key];
+                        delete processedFiles[key];
+                        const listItem = document.getElementById(`file-item-${key}`);
+                        if (listItem) {
+                            listItem.remove();
+                        }
+                        fileInput.value = '';
+                    });
+                });
+            } else {
+                generateThumbnail(file, function(thumbnail) {
+                    const thumbnailElement = listItem.querySelector('.thumbnail');
+                    thumbnailElement.src = thumbnail;
+
+                    const nameElement = listItem.querySelector('.file-info p strong:nth-child(1)');
+                    nameElement.textContent = file.name;
+
+                    const extensionElement = listItem.querySelector('.file-info p strong:nth-child(2)');
+                    extensionElement.textContent = file.name.split('.').pop();
+
+                    const sizeElement = listItem.querySelector('.file-info p strong:nth-child(3)');
+                    sizeElement.textContent = formatFileSize(file.size);
+                });
+            }
+        }
+
+        function handleFiles(files) {
+            uploadedFiles = {};
+            processedFiles = {};
+            for (let i = 0; i < files.length; i++) {
+                if (files[i].size > (10 * 1024 * 1024)) {
+                    alert('El archivo ' + files[i].name + ' excede el tamaño máximo de 10 MB.');
+                    continue;
+                }
+                const file = files[i];
+                const key = generateFileKey(file);
+                if (!uploadedFiles[key]) {
+                    uploadedFiles[key] = file;
+                    displayFileItem(file);
+                }
+            }
+        }
+
+        function uploadFiles() {
+            if (isProcessing) {
+                return;
+            }
+
+            const filesToUpload = [];
+            const filesData = [];
+
+            for (const key in uploadedFiles) {
+                if (uploadedFiles.hasOwnProperty(key)) {
+                    const file = uploadedFiles[key];
+                    const currentQuality = parseInt(document.getElementById(`quality-${key}`).value);
+                    const currentResolution = parseInt(document.getElementById(`resolution-${key}`).value);
+                    const currentOutputFormat = document.getElementById(`output_format-${key}`).value;
+
+                    if (!processedFiles[key] ||
+                        processedFiles[key].status === 'failed' ||
+                        processedFiles[key].quality !== currentQuality ||
+                        processedFiles[key].resolution !== currentResolution ||
+                        processedFiles[key].output_format !== currentOutputFormat) {
+                        filesToUpload.push(file);
+                        filesData.push({
+                            key: key,
+                            quality: currentQuality,
+                            resolution: currentResolution,
+                            output_format: currentOutputFormat
+                        });
+                    }
+                }
+            }
+
+            if (filesToUpload.length === 0) {
+                alert('No hay imágenes nuevas o modificadas para procesar.');
+                return;
+            }
+
+            isProcessing = true;
+            convertButton.disabled = true;
+            dropArea.classList.add('disabled');
+            const formData = new FormData();
+
+            totalImagesToProcess = filesToUpload.length; // Set the total number of images
+
+            filesToUpload.forEach((file, index) => {
+                formData.append('files', file);
+                formData.append('file_key', filesData[index].key);
+                formData.append('quality-' + filesData[index].key, filesData[index].quality);
+                formData.append('resolution-' + filesData[index].key, filesData[index].resolution);
+                formData.append('output_format-' + filesData[index].key, filesData[index].output_format);
+            });
+
+            console.log("FormData:", formData); // Debug form data
+
+            const token = localStorage.getItem('jwtToken');
+            const headers = {
+                'Authorization': `Bearer ${token}`
+            };
+
+            fetch('/convert', {
+                method: 'POST',
+                headers: headers,
+                body: formData
+            })
+            .then(response => {
+                if (!response.ok) {
+                  return response.json().then(data => {
+                    if (response.status === 401) {
+                      localStorage.removeItem('jwtToken'); // Remove token
+                      updateUI(); // Update UI to logged-out state
+                      throw new Error('Error: Debes iniciar sesión para convertir imágenes. Tu sesión ha expirado.');
+                    } else {
+                      throw new Error(data.error || 'Network response was not ok');
+                    }
+                  });
+                }
+                return response.json();
+              })
+            .then(data => {
+                console.log("Respuesta del servidor:", data); // Inspect server response
+                if (data.error) {
+                    errorElement.textContent = data.error;
+                    errorElement.classList.add('show');
+                    resetState();
+                } else {
+                    errorElement.classList.remove('show');
+                    if (data && data.uploaded_files_info && Array.isArray(data.uploaded_files_info)) {
+                        jobIds = data.job_ids;
+                        progressContainer.style.display = 'block';
+                        window.onbeforeunload = function() {
+                            return "Hay un proceso de conversión en curso, ¿seguro que quieres salir de la página?";
+                        };
+                        completedImages = 0;
+                        progressBar.style.width = '0%'; // Reset progress bar
+                        progressText.textContent = 'Procesando imágenes...'; // Reset progress text
+                        for (const fileInfo of data.uploaded_files_info) {
+                            const key = fileInfo.key;
+                            if (uploadedFiles[key]) {
+                                processedFiles[key] = {
+                                    status: 'processing',
+                                    jobId: jobIds.pop()
+                                };
+                                console.log(`Assigned job ID ${processedFiles[key].jobId} to file key ${key}`);
+                                checkProgress(key);
+                            }
+                        }
+                    } else {
+                        console.error('Error: La respuesta del servidor no contiene uploaded_files_info o no es un array.');
+                        resetState();
+                    }
+                }
+            })
+            .catch(error => {
+              console.error('Error:', error);
+              errorElement.textContent = error.message;
+              errorElement.classList.add('show');
+              resetState();
+            });
+        }
+
+        dropArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropArea.classList.add('dragover');
+        });
+
+        dropArea.addEventListener('dragleave', () => {
+            dropArea.classList.remove('dragover');
+        });
+
+        dropArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropArea.classList.remove('dragover');
+            if (!isProcessing) {
+                const files = e.dataTransfer.files;
+                fileInput.files = files;
+                handleFiles(files);
+            }
+        });
+
+        dropArea.addEventListener('click', () => {
+            if(!isProcessing){
+                fileInput.click();
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if(!isProcessing){
+                const files = e.target.files;
+                handleFiles(files);
+            }
+        });
+
+        convertButton.addEventListener('click', (e) => {
+           e.preventDefault(); // Prevent default form submission
+           uploadFiles();
+        });
+
+        async function checkProgress(key) {
+            const jobId = processedFiles[key].jobId;
+            console.log(`Checking progress for file key ${key}, job ID: ${jobId}`);
+            try {
+                const token = localStorage.getItem('jwtToken');
+                console.log('Token from local storage:', token);
+                if (!token) {
+                    throw new Error('No JWT token found in local storage');
+                }
+                const encodedToken = encodeURIComponent(token);
+                const headers = {
+                    'Authorization': `Bearer ${token}`
+                };
+                const response = await fetch(`/progress/${jobId}`, { headers: headers });
+                if (!response.ok) {
+                    if (response.status === 401) {
+                        localStorage.removeItem('jwtToken'); // Remove the token
+                        updateUI(); // Update the UI to reflect logged-out state
+                        throw new Error('Error: Debes iniciar sesión para convertir imágenes. Tu sesión ha expirado.'); // Provide a more informative error message
+                    } else {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                }
+                const data = await response.json();
+                if (data.status === 'finished' && data.result) {
+                    completedImages++;
+                    const downloadButtonContainer = document.getElementById(`download-buttons-${key}`);
+                    // Remove existing buttons
+                    while (downloadButtonContainer.firstChild) {
+                        downloadButtonContainer.removeChild(downloadButtonContainer.firstChild);
+                    }
+                    const file = uploadedFiles[key];
+                    const outputFormat = document.getElementById(`output_format-${key}`).value;
+                    const fileExtension = outputFormat === 'original' ? file.name.split('.').pop() : outputFormat;
+                    const newTabLink = document.createElement('a');
+                    newTabLink.href = `/file/${jobId}?token=${encodedToken}`;
+                    newTabLink.target = "_blank";
+                    newTabLink.textContent = 'Ver';
+                    downloadButtonContainer.appendChild(newTabLink);
+                    const downloadLink = document.createElement('a');
+                    downloadLink.href = `/download/${jobId}?token=${encodedToken}`;
+                    downloadLink.download = `${file.name.split('.')[0]}.${fileExtension}`;
+                    downloadLink.textContent = 'Descargar';
+                    downloadButtonContainer.appendChild(downloadLink);
+                    downloadButtonContainer.style.display = 'inline-block';
+                    processedFiles[key] = {
+                        ...file,
+                        status: 'processed',
+                        jobId: jobId,
+                        quality: parseInt(document.getElementById(`quality-${key}`).value),
+                        resolution: parseInt(document.getElementById(`resolution-${key}`).value),
+                        output_format: outputFormat
+                    };
+                    const progress = Math.round((completedImages / totalImagesToProcess) * 100);
+                    progressBar.style.width = `${progress}%`;
+                    progressText.textContent = `Procesando imágenes... ${progress}%`;
+                    if (completedImages === totalImagesToProcess) {
+                        progressContainer.style.display = 'none';
+                        progressText.textContent = ''; // Clear the text
+                        resetState();
+                    }
+                } else if (data.status === 'failed' || (data.status === 'finished' && !data.result)) {
+                    progressText.textContent = `Error al procesar la imagen: ${data.error || 'Error Desconocido'}`;
+                    const listItem = document.getElementById(`file-item-${key}`);
+                    if (listItem) {
+                        listItem.style.backgroundColor = 'lightcoral';
+                    }
+                    processedFiles[key] = {
+                        ...uploadedFiles[key],
+                        status: 'failed',
+                        jobId: jobId,
+                        quality: parseInt(document.getElementById(`quality-${key}`).value),
+                        resolution: parseInt(document.getElementById(`resolution-${key}`).value),
+                        output_format: document.getElementById(`output_format-${key}`).value
+                    };
+                    if (completedImages === totalImagesToProcess) {
+                        progressContainer.style.display = 'none';
+                        progressText.textContent = ''; // Clear the text
+                        resetState();
+                    }
+                } else {
+                    const progress = Math.round((completedImages / totalImagesToProcess) * 100);
+                    progressBar.style.width = `${progress}%`;
+                    progressText.textContent = `Procesando imágenes... ${progress}%`;
+                    setTimeout(() => checkProgress(key), 500);
+                }
+            } catch (error) {
+                console.error('Error al verificar el progreso:', error);
+                progressText.textContent = error.message; // Display the error message
+                resetState();
+            }
+        }
+
+        function resetState() {
+            isProcessing = false;
+            convertButton.disabled = false;
+            dropArea.classList.remove('disabled');
+            window.onbeforeunload = null;
+            jobIds = [];
+            completedImages = 0;
+            totalImagesToProcess = 0; // Reset total images
+            progressContainer.style.display = 'none'; // Hide progress container
+            progressText.textContent = ''; // Clear the text
+            progressBar.style.width = '0%'; // Reset progress bar
+        }
+
+        window.onload = function() {
+            resetState();
+        }
+
+        loginForm.addEventListener('submit', function(event) {
+            console.log('Login form submitted');
+            event.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            fetch('/auth', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ username, password })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.token) {
+                    localStorage.setItem('jwtToken', data.token);
+                    alert('Login successful');
+                    updateUI(); // Update UI after successful login
+                } else {
+                    alert('Login failed');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('An error occurred during login');
+            });
+        });
+
+        logoutButton.addEventListener('click', function() {
+            localStorage.removeItem('jwtToken');
+            updateUI(); // Update UI after logout
+        });
+    </script>
+</body>
+</html>
