@@ -2,8 +2,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: worker-deployment
+  namespace: convertidor-imagenes
 spec:
-  replicas: 3 # Start with the desired number of replicas
+  replicas: 2
   selector:
     matchLabels:
       app: worker
@@ -39,11 +40,11 @@ spec:
           value: "redis://redis-service:6379"
         resources:
           requests:
-            cpu: "800m"
-            memory: "512Mi"
+            cpu: "500m"  # Lowered request to 500m
+            memory: "512Mi" # Adjust as needed
           limits:
-            cpu: "900m"
-            memory: "1Gi"
+            cpu: "750m"  # Lowered limit to 750m (0.75 cores)
+            memory: "1Gi" # Adjust as needed
         volumeMounts:
         - name: uploads
           mountPath: /app/uploads

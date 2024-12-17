@@ -71,6 +71,7 @@
         const loginForm = document.getElementById('loginForm');
         const logoutButton = document.getElementById('logoutButton');
         let totalImagesToProcess = 0; // Total number of images to be processed
+        let globalRequestId = null; // Variable to store the request ID
 
         // Function to check if the user is logged in
         function isLoggedIn() {
@@ -162,16 +163,15 @@
                     listItem.classList.add('file-item');
                     listItem.id = `file-item-${key}`;
 
-                    // Extract file extension using regular expression
-                    const match = file.name.match(/\.([0-9a-z]+)(?:[\?#]|$)/i);
-                    const fileExtension = match ? match[1].toLowerCase() : '';
+                    // Get file extension safely
+                    const fileNameParts = file.name.split('.');
+                    const fileExtension = fileNameParts.length > 1 ? fileNameParts.pop().toLowerCase() : ''; // Handle cases with no extension
 
-                    // ... rest of the code ...
                     listItem.innerHTML = `
                         <img src="${thumbnail}" alt="Thumbnail" class="thumbnail">
                         <div class="file-info">
                             <p><strong>Nombre:</strong> ${file.name}</p>
-                            <p><strong>Extensión:</strong> ${fileExtension}</p>
+                            <p><strong>Extensión:</strong> ${fileExtension}</p> // Use the safe fileExtension variable
                             <p><strong>Tamaño:</strong> ${formatFileSize(file.size)}</p>
                             <div class="file-settings">
                                 <label for="quality-${key}">Calidad:</label>
@@ -350,16 +350,24 @@
                     resetState();
                 } else {
                     errorElement.classList.remove('show');
-                    if (data && data.request_id && data.uploaded_files_info && Array.isArray(data.uploaded_files_info)) {
-                        const requestId = data.request_id;
+                    if (data && data.uploaded_files_info && Array.isArray(data.uploaded_files_info)) {
+                        globalRequestId = data.request_id; // Store the request ID
                         progressContainer.style.display = 'block';
                         window.onbeforeunload = function() {
                             return "Hay un proceso de conversión en curso, ¿seguro que quieres salir de la página?";
                         };
                         completedImages = 0;
-                        progressBar.style.width = '0%';
-                        progressText.textContent = 'Procesando imágenes...';
-                        checkProgress(requestId); // Pass the request ID to checkProgress
+                        progressBar.style.width = '0%'; // Reset progress bar
+                        progressText.textContent = 'Procesando imágenes...'; // Reset progress text
+                        for (const fileInfo of data.uploaded_files_info) {
+                            const key = fileInfo.key;
+                            if (uploadedFiles[key]) {
+                                processedFiles[key] = {
+                                    status: 'processing'
+                                };
+                            }
+                        }
+                        checkProgress(globalRequestId); // Start checking progress with request_id
                     } else {
                         console.error('Error: La respuesta del servidor no contiene uploaded_files_info o no es un array.');
                         resetState();
@@ -420,22 +428,23 @@
         });
 
         async function checkProgress(requestId) {
-            console.log(`Checking progress for request ID: ${requestId}`);
+            console.log(`Checking progress for request ID ${requestId}`);
             try {
                 const token = localStorage.getItem('jwtToken');
                 if (!token) {
                     throw new Error('No JWT token found in local storage');
                 }
+                const encodedToken = encodeURIComponent(token);
                 const headers = {
                     'Authorization': `Bearer ${token}`
                 };
-
                 const response = await fetch(`/progress/${requestId}`, { headers: headers });
+
                 if (!response.ok) {
                     if (response.status === 401) {
                         localStorage.removeItem('jwtToken');
                         updateUI();
-                        throw new Error('Error: Your session has expired. Please log in again.');
+                        throw new Error('Error: Debes iniciar sesión para convertir imágenes. Tu sesión ha expirado.');
                     } else {
                         throw new Error(`HTTP error! status: ${response.status}`);
                     }
@@ -444,93 +453,95 @@
                 const data = await response.json();
                 console.log("Progress data:", data);
 
-                if (data.status === 'finished') {
-                    completedImages = data.completed_jobs;
-                    const progress = Math.round((completedImages / totalImagesToProcess) * 100);
-                    progressBar.style.width = `${progress}%`;
-                    progressText.textContent = `Processing images... ${progress}%`;
-
-                    // Update the UI for each file
-                    for (let i = 0; i < data.total_jobs; i++) {
-                        const fileKey = Object.keys(uploadedFiles)[i];
-                        const fileStatus = data.statuses[i];
-                        const jobId = data.job_ids[i];
-
-                        if (fileStatus === 'succeeded') {
-                            updateUIDownloadLink(fileKey, jobId);
-                        } else if (fileStatus === 'failed') {
-                            updateUIError(fileKey);
-                        }
-                    }
-
-                    progressContainer.style.display = 'none';
-                    progressText.textContent = '';
+                if (data.error) {
+                    progressText.textContent = `Error: ${data.error}`;
                     resetState();
-                } else {
-                    completedImages = data.completed_jobs;
-                    const progress = Math.round((completedImages / totalImagesToProcess) * 100);
-                    progressBar.style.width = `${progress}%`;
-                    progressText.textContent = `Processing images... ${progress}%`;
-                    setTimeout(() => checkProgress(requestId), 500);
+                    return;
                 }
+
+                completedImages = data.completed;
+                const progress = Math.round((completedImages / totalImagesToProcess) * 100);
+                progressBar.style.width = `${progress}%`;
+                progressText.textContent = `Procesando imágenes... ${progress}%`;
+
+                const promises = Object.keys(data.results).map(async (job_id) => {
+                    const jobResult = data.results[job_id];
+                    const fileKey = Object.keys(uploadedFiles).find(key => job_id.startsWith(key));
+
+                    if (jobResult.status === 'finished' && jobResult.result) {
+                        const downloadButtonContainer = document.getElementById(`download-buttons-${fileKey}`);
+                        while (downloadButtonContainer.firstChild) {
+                            downloadButtonContainer.removeChild(downloadButtonContainer.firstChild);
+                        }
+
+                        // Fetch the job result to get the output filename
+                        const jobResultResponse = await fetch(`/download/${job_id}?token=${encodedToken}`, { headers: headers });
+                        if (!jobResultResponse.ok) {
+                            throw new Error(`HTTP error! status: ${jobResultResponse.status}`);
+                        }
+                        const jobResultData = await jobResultResponse.blob(); // Change this line to get a blob
+
+                        if (jobResultData) {
+                            const url = window.URL.createObjectURL(jobResultData); // Create a URL for the blob
+                            const outputFilename = jobResult.result; // jobResult.result should contain the output filename
+
+                            const newTabLink = document.createElement('a');
+                            newTabLink.href = url;
+                            newTabLink.target = "_blank";
+                            newTabLink.textContent = 'Ver';
+                            // No need to set the 'type' attribute for viewing in a new tab
+                            downloadButtonContainer.appendChild(newTabLink);
+
+                            const downloadLink = document.createElement('a');
+                            downloadLink.href = url;
+                            downloadLink.download = outputFilename; // Set the download attribute to the output filename
+                            downloadLink.textContent = 'Descargar';
+                            downloadButtonContainer.appendChild(downloadLink);
+                            downloadButtonContainer.style.display = 'inline-block';
+
+                            processedFiles[fileKey] = {
+                                ...uploadedFiles[fileKey],
+                                status: 'processed',
+                                jobId: job_id,
+                                quality: parseInt(document.getElementById(`quality-${fileKey}`).value),
+                                resolution: parseInt(document.getElementById(`resolution-${fileKey}`).value),
+                                output_format: document.getElementById(`output_format-${fileKey}`).value
+                            };
+                        }
+                    } else if (jobResult.status === 'failed') {
+                        progressText.textContent = `Error al procesar la imagen: ${jobResult.error || 'Error Desconocido'}`;
+                        const listItem = document.getElementById(`file-item-${fileKey}`);
+                        if (listItem) {
+                            listItem.style.backgroundColor = 'lightcoral';
+                        }
+
+                        processedFiles[fileKey] = {
+                            ...uploadedFiles[fileKey],
+                            status: 'failed',
+                            jobId: job_id,
+                            quality: parseInt(document.getElementById(`quality-${fileKey}`).value),
+                            resolution: parseInt(document.getElementById(`resolution-${fileKey}`).value),
+                            output_format: document.getElementById(`output_format-${fileKey}`).value
+                        };
+                    }
+                });
+
+                // Wait for all promises to settle (either resolve or reject)
+                await Promise.allSettled(promises);
+
+                if (data.all_finished) {
+                    progressContainer.style.display = 'none';
+                    progressText.textContent = ''; // Clear the text
+                    resetState(); // Call resetState only after all updates are done
+                } else {
+                    setTimeout(() => checkProgress(requestId), 1000); // Poll every second
+                }
+
             } catch (error) {
-                console.error('Error checking progress:', error);
+                console.error('Error al verificar el progreso:', error);
                 progressText.textContent = error.message;
                 resetState();
             }
-        }
-
-        async function updateUIDownloadLink(fileKey, jobId) {
-            const downloadButtonContainer = document.getElementById(`download-buttons-${fileKey}`);
-            while (downloadButtonContainer.firstChild) {
-                downloadButtonContainer.removeChild(downloadButtonContainer.firstChild);
-            }
-            const encodedToken = encodeURIComponent(localStorage.getItem('jwtToken'));
-            const headers = {
-                'Authorization': `Bearer ${localStorage.getItem('jwtToken')}`
-            };
-            const jobResultResponse = await fetch(`/download/${jobId}?token=${encodedToken}`, { headers: headers });
-            if (!jobResultResponse.ok) {
-                throw new Error(`HTTP error! status: ${jobResultResponse.status}`);
-            }
-            const jobResult = await jobResultResponse.json();
-            if (jobResult && jobResult.success) {
-                const outputFilename = jobResult.output_filename;
-                const newTabLink = document.createElement('a');
-                newTabLink.href = `/file/${jobId}?token=${encodedToken}`;
-                newTabLink.target = "_blank";
-                newTabLink.textContent = 'View';
-                downloadButtonContainer.appendChild(newTabLink);
-                const downloadLink = document.createElement('a');
-                downloadLink.href = `/download/${jobId}?token=${encodedToken}`;
-                downloadLink.download = outputFilename;
-                downloadLink.textContent = 'Download';
-                downloadButtonContainer.appendChild(downloadLink);
-                downloadButtonContainer.style.display = 'inline-block';
-                processedFiles[fileKey] = {
-                    ...uploadedFiles[fileKey],
-                    status: 'processed',
-                    jobId: jobId,
-                    quality: parseInt(document.getElementById(`quality-${fileKey}`).value),
-                    resolution: parseInt(document.getElementById(`resolution-${fileKey}`).value),
-                    output_format: document.getElementById(`output_format-${fileKey}`).value
-                };
-            }
-        }
-
-        function updateUIError(fileKey) {
-            progressText.textContent = `Error processing image`;
-            const listItem = document.getElementById(`file-item-${fileKey}`);
-            if (listItem) {
-                listItem.style.backgroundColor = 'lightcoral';
-            }
-            processedFiles[fileKey] = {
-                ...uploadedFiles[fileKey],
-                status: 'failed',
-                quality: parseInt(document.getElementById(`quality-${fileKey}`).value),
-                resolution: parseInt(document.getElementById(`resolution-${fileKey}`).value),
-                output_format: document.getElementById(`output_format-${fileKey}`).value
-            };
         }
 
         function resetState() {
@@ -544,6 +555,7 @@
             progressContainer.style.display = 'none'; // Hide progress container
             progressText.textContent = ''; // Clear the text
             progressBar.style.width = '0%'; // Reset progress bar
+            globalRequestId = null; // Reset global request ID
         }
 
         window.onload = function() {

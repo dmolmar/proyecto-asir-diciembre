@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traefik
+  namespace: convertidor-imagenes # Add namespace here
+  labels:
+    app: traefik
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: traefik
+  template:
+    metadata:
+      labels:
+        app: traefik
+    spec:
+      serviceAccountName: traefik-ingress-controller
+      containers:
+        - name: traefik
+          image: traefik:v2.10
+          args:
+            - --api.insecure=true
+            - --providers.kubernetesingress
+            - --providers.kubernetescrd
+            - --entrypoints.web.address=:80
+            - --providers.kubernetesingress.ingressclass=traefik
+          ports:
+            - name: web
+              containerPort: 80
+            - name: admin
+              containerPort: 8080
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: traefik-ingress-controller
+  namespace: convertidor-imagenes # Add namespace here

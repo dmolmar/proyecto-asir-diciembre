@@ -3,8 +3,6 @@ import logging
 import redis
 from rq import Worker, Queue
 
-from tasks import process_image
-
 logging.basicConfig(level=logging.DEBUG, handlers=[logging.StreamHandler()])
 worker_logger = logging.getLogger("worker")
 

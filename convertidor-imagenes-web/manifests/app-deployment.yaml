@@ -2,8 +2,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: images-api-deployment
+  namespace: convertidor-imagenes
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: images-api
@@ -34,6 +35,13 @@ spec:
                   key: secret-key
             - name: REDIS_URL
               value: "redis://redis-service:6379"
+          resources:
+            requests:
+              cpu: "100m"   # Lowered request to 100m (adjust as needed)
+              memory: "256Mi" # Adjust as needed
+            limits:
+              cpu: "1000m"  # Increased limit to 3000m (3 cores)
+              memory: "1Gi" # Adjust as needed
           volumeMounts:
             - name: uploads
               mountPath: /app/uploads

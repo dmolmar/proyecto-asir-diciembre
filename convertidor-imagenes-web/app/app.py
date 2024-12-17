@@ -23,7 +23,6 @@ from urllib.parse import unquote
 from concurrent.futures import ThreadPoolExecutor
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
-from collections import defaultdict
 
 from opentelemetry import trace, metrics
 from opentelemetry.sdk.trace import TracerProvider
@@ -56,7 +55,7 @@ UPLOAD_FOLDER = 'uploads'
 TEMP_UPLOAD_FOLDER = 'temp_uploads'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'ico', 'avif', 'svg', 'psd', 'raw'}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
-MAX_PIXELS = 10000 * 10000  # 100 megapíxeles
+MAX_PIXELS = 20000000  # 20 megapíxeles
 MAX_FILES = 50
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -182,89 +181,30 @@ def requires_auth(f):
 def index():
     return render_template('index.html')
 
-def create_kubernetes_job(file_path, output_format, quality, resolution_percentage, filename, request_id):
-    job_name = f"image-job-{uuid.uuid4()}"
-    job = client.V1Job(
-        api_version="batch/v1",
-        kind="Job",
-        metadata=client.V1ObjectMeta(name=job_name, labels={"request-id": request_id}),
-        spec=client.V1JobSpec(
-            template=client.V1PodTemplateSpec(
-                spec=client.V1PodSpec(
-                    containers=[
-                        client.V1Container(
-                            name="worker-container",
-                            image="dmolmar/images-api:latest",  # Replace with your image
-                            command=["python", "-u", "worker.py"],
-                            args=[file_path, output_format, str(quality), str(resolution_percentage), filename], # Pass arguments here
-                            env=[
-                                client.V1EnvVar(
-                                    name="SECRET_KEY",
-                                    value_from=client.V1EnvVarSource(
-                                        secret_key_ref=client.V1SecretKeySelector(
-                                            name="app-secrets",
-                                            key="secret-key"
-                                        )
-                                    )
-                                ),
-                                client.V1EnvVar(
-                                    name="REDIS_URL",
-                                    value="redis://redis-service:6379"
-                                ),
-                            ],
-                            resources=client.V1ResourceRequirements(
-                                requests={"cpu": "800m", "memory": "512Mi"},
-                                limits={"cpu": "900m", "memory": "1Gi"},
-                            ),
-                            volume_mounts=[
-                                client.V1VolumeMount(name="uploads", mount_path="/app/uploads"),
-                                client.V1VolumeMount(name="temp-uploads", mount_path="/app/temp_uploads"),
-                            ],
-                        )
-                    ],
-                    restart_policy="Never",
-                    volumes=[
-                        client.V1Volume(name="uploads", persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(claim_name="uploads-pvc")),
-                        client.V1Volume(name="temp-uploads", persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(claim_name="temp-uploads-pvc")),
-                    ],
-                )
-            ),
-            backoff_limit=3,
-            ttl_seconds_after_finished=60,
-        )
-    )
-    try:
-        batch_v1.create_namespaced_job(namespace="convertidor-imagenes", body=job)  # Ensure correct namespace
-        return job_name
-    except ApiException as e:
-        app.logger.error(f"Error creating Kubernetes Job: {e}")
-        return None
-
 @app.route('/convert', methods=['POST'])
 @requires_auth
 def convert():
     with tracer.start_as_current_span("convert-route"):
         request_counter.add(1, {"endpoint": "/convert"})
         if 'files' not in request.files:
-            return jsonify({'error': 'No files uploaded.'}), 400
+            return jsonify({'error': 'No se han subido archivos.'}), 400
 
         files = request.files.getlist('files')
         if not files:
-            return jsonify({'error': 'No files uploaded.'}), 400
+            return jsonify({'error': 'No se han subido archivos.'}), 400
 
         if len(files) > MAX_FILES:
-            return jsonify({'error': f'Maximum number of files exceeded ({MAX_FILES}).'}), 400
+            return jsonify({'error': f'Se ha excedido el número máximo de archivos ({MAX_FILES}).'}), 400
 
         request_id = str(uuid.uuid4())  # Generate a unique ID for this request
         job_ids = []
         uploaded_files_info = []
-        file_job_map = {} # Map file keys to job IDs
-
+        
         try:
             check_resource_availability()  # Check resources before enqueuing
         except ResourceLimitExceeded as e:
-            return jsonify({'error': str(e)}), 503  # 503 Service Unavailable
-
+             return jsonify({'error': str(e)}), 503
+        
         for file in files:
             file_key = request.form.get('file_key')
             quality = int(request.form.get(f'quality-{file_key}', 95))
@@ -273,20 +213,25 @@ def convert():
 
             if file and allowed_file(file.filename):
                 if file.content_length > MAX_FILE_SIZE:
-                    return jsonify({'error': f'File {file.filename} exceeds the maximum size of {MAX_FILE_SIZE / (1024 * 1024)} MB.'}), 400
+                   return jsonify({'error': f'El archivo {file.filename} excede el tamaño máximo de {MAX_FILE_SIZE / (1024 * 1024)} MB.'}), 400
                 try:
                     unique_filename = str(uuid.uuid4()) + '.' + file.filename.rsplit('.', 1)[1].lower()
                     temp_path = os.path.join(TEMP_UPLOAD_FOLDER, unique_filename)
                     file.save(temp_path)
-
+                    
                     image = Image.open(temp_path)
                     if image.width * image.height > MAX_PIXELS:
                         os.remove(temp_path)
-                        return jsonify({'error': f'File {file.filename} exceeds the maximum size of {MAX_PIXELS / 1000000} MP.'}), 400
-                    
-                    job = q.enqueue(process_image, temp_path, output_format, quality, resolution_percentage, file.filename, job_timeout=180)
+                        return jsonify({'error': f'El archivo {file.filename} excede el tamaño máximo de {MAX_PIXELS / 1000000} MP.'}), 400
+
+                    # Enqueue the job with retries
+                    job = q.enqueue(process_image, args=(temp_path, output_format, quality, resolution_percentage, file.filename),
+                                    job_timeout=360,
+                                    result_ttl=360,
+                                    failure_ttl=360,
+                                    retry=Retry(max=3, interval=[10, 30, 60]))
                     job_ids.append(job.id)
-                    file_job_map[file_key] = job.id # Associate file key with job ID
+
                     uploaded_files_info.append({
                         'key': file_key,
                         'name': file.filename,
@@ -304,131 +249,119 @@ def convert():
         redis_conn.set(f"request:{request_id}:completed", 0)
 
         app.logger.info(f"Request ID: {request_id}, Job Names: {job_ids}")
-        return jsonify({'request_id': request_id, 'uploaded_files_info': uploaded_files_info, 'file_job_map': file_job_map})
+        return jsonify({'request_id': request_id, 'uploaded_files_info': uploaded_files_info})
 
 @app.route('/download/<job_id>')
 @requires_auth
 def download_file(job_id):
-    try:
-        job = q.fetch_job(job_id)
-        if job is None:
-            return "Job not found", 404
-        
-        if job.is_failed:
-            return "Job failed", 500
+    with tracer.start_as_current_span("download-file-route"):
+        try:
+            job = q.fetch_job(job_id)
+            if job is None:
+                abort(404, description="Job not found")
+            if job.is_failed:
+                abort(500, description=f"Job failed: {job.exc_info}")
+            if not job.is_finished:
+                abort(400, description="Job not finished yet")
 
-        if job.result:
-            result = job.result
-            if result['success']:
-                output_path = result['output_path']
-                output_filename = result['output_filename']
-                return send_file(output_path, download_name=output_filename, as_attachment=True)
-            else:
-                return f"Error processing image: {result['error']}", 500
-        else:
-            return "Job not finished yet", 202
+            output_filename = job.result
+            if not output_filename:
+                abort(500, description="Output filename not found")
 
-    except NoSuchJobError:
-        return "Job not found", 404
-    except Exception as e:
-        app.logger.error(f"Error handling job {job_id}: {e}")
-        return "Error interno del servidor", 500
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], output_filename)
+            if not os.path.exists(file_path):
+                abort(404, description=f"File not found: {output_filename}")
+
+            response = send_file(file_path, as_attachment=True, download_name=output_filename)
+            return response
+        except NoSuchJobError:
+            abort(404, description="Job not found")
+        except Exception as e:
+            app.logger.error(f"Error downloading file: {e}")
+            abort(500, description=f"Error downloading file: {e}")
 
 @app.route('/file/<job_id>')
 @requires_auth
 def get_file(job_id):
-    try:
-        token = request.args.get('token')
-        if token:
-            try:
-                token = unquote(token)
-                jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-            except jwt.ExpiredSignatureError:
-                return jsonify({'message': 'Token has expired!', 'error': 'expired_token'}), 401
-            except jwt.InvalidTokenError:
-                return jsonify({'message': 'Invalid token!', 'error': 'invalid_token'}), 401
+    with tracer.start_as_current_span("get-file-route"):
+        try:
+            job = q.fetch_job(job_id)
+            if job is None:
+                abort(404, description="Job not found")
+            if job.is_failed:
+                abort(500, description=f"Job failed: {job.exc_info}")
+            if not job.is_finished:
+                abort(400, description="Job not finished yet")
 
-        job = q.fetch_job(job_id)
-        if job is None:
-            return jsonify({'status': 'not found'}), 404
-        
-        if job.is_failed:
-            return jsonify({'status': 'failed'}), 500
+            output_filename = job.result
+            if not output_filename:
+                abort(500, description="Output filename not found")
 
-        if job.result:
-            result = job.result
-            if result['success']:
-                output_path = result['output_path']
-                output_filename = result['output_filename']
-                return send_file(output_path, mimetype='image/jpeg', as_attachment=False, download_name=output_filename)
-            else:
-                return jsonify({'status': 'error', 'message': f"Error processing image: {result['error']}"}), 500
-        else:
-            return jsonify({'status': 'processing'}), 202
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], output_filename)
 
-    except NoSuchJobError:
-        return jsonify({'status': 'not found'}), 404
-    except Exception as e:
-        app.logger.error(f"Error handling job {job_id}: {e}")
-        return jsonify({'status': 'error', 'message': 'Internal server error'}), 500
+            if not os.path.exists(file_path):
+                abort(404, description=f"File not found: {output_filename}")
+            
+            return send_file(file_path, mimetype='image/jpeg')
+        except NoSuchJobError:
+            abort(404, description="Job not found")
+        except Exception as e:
+            app.logger.error(f"Error getting file: {e}")
+            abort(500, description=f"Error getting file: {e}")
 
 @app.route('/progress/<request_id>')
 @requires_auth
 def progress(request_id):
-    job_ids_str = redis_conn.get(f"request:{request_id}:jobs")
-    if not job_ids_str:
-        return jsonify({'status': 'not found'}), 404
-
-    job_ids = job_ids_str.decode().split(",")
-    completed_count = 0
-    failed_count = 0
-    statuses = []
-    job_id_list = []
-
-    for job_id in job_ids:
+    with tracer.start_as_current_span("progress-route"):
         try:
-            job = q.fetch_job(job_id, connection=redis_conn)
-            if job is None:
-                statuses.append("not found")
-                job_id_list.append(None)
-            elif job.is_finished:
-                completed_count += 1
-                statuses.append("succeeded")
-                job_id_list.append(job_id)
-            elif job.is_failed:
-                failed_count += 1
-                statuses.append("failed")
-                job_id_list.append(job_id)
-            else:
-                statuses.append("running")
-                job_id_list.append(job_id)
-        except redis.exceptions.ConnectionError as e:
-            app.logger.error(f"Redis connection error: {e}")
-            statuses.append("error")
-            job_id_list.append(None)
-        except NoSuchJobError:
-            statuses.append("not found")
-            job_id_list.append(None)
+            job_ids_str = redis_conn.get(f"request:{request_id}:jobs")
+            if job_ids_str is None:
+                return jsonify({'error': 'Request ID not found.'}), 404
+
+            job_ids = job_ids_str.decode().split(",")
+            total_jobs = len(job_ids)
+            completed_jobs = 0
+            failed_jobs = 0
+            results = {}
+
+            for job_id in job_ids:
+                try:
+                    job = q.fetch_job(job_id)
+                    if job is None:
+                        failed_jobs += 1
+                        results[job_id] = {'status': 'not found'}
+                        continue
+
+                    if job.is_finished:
+                        completed_jobs += 1
+                        results[job_id] = {'status': 'finished', 'result': job.result}
+                    elif job.is_failed:
+                        failed_jobs += 1
+                        results[job_id] = {'status': 'failed', 'error': job.exc_info}
+                    else:
+                        results[job_id] = {'status': 'processing'}
+                except NoSuchJobError:
+                    failed_jobs += 1
+                    results[job_id] = {'status': 'not found'}
+                except redis.exceptions.ConnectionError as e:
+                    app.logger.error(f"Redis connection error: {e}")
+                    return jsonify({'error': 'Redis connection error'}), 500
+
+            all_finished = completed_jobs + failed_jobs == total_jobs
+
+            progress_data = {
+                'total': total_jobs,
+                'completed': completed_jobs,
+                'failed': failed_jobs,
+                'all_finished': all_finished,
+                'results': results
+            }
+
+            return jsonify(progress_data)
+
         except Exception as e:
-            app.logger.error(f"Error getting job status: {e}")
-            statuses.append("error")
-            job_id_list.append(None)
-
-    total_jobs = len(job_ids)
-    completed_percentage = int((completed_count / total_jobs) * 100) if total_jobs > 0 else 0
-
-    # Update progress in Redis (optional, for more detailed tracking)
-    redis_conn.set(f"request:{request_id}:completed", completed_count)
-
-    return jsonify({
-        'total_jobs': total_jobs,
-        'completed_jobs': completed_count,
-        'failed_jobs': failed_count,
-        'statuses': statuses,
-        'job_ids': job_id_list,
-        'progress': completed_percentage,
-        'status': 'finished' if completed_count + failed_count == total_jobs else 'processing'
-    })
+            app.logger.error(f"An unexpected error occurred: {e}")
+            return jsonify({'error': 'An unexpected error occurred on the server.'}), 500
 
 @app.errorhandler(Exception)
 def handle_unexpected_error(error):
