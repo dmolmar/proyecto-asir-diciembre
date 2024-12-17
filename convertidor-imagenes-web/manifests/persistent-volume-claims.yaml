@@ -4,10 +4,11 @@ metadata:
   name: uploads-pvc
 spec:
   accessModes:
-    - ReadWriteMany # Or ReadWriteOnce, depending on your storage class and needs
+    - ReadWriteMany
+  storageClassName: local-storage # Add storage class name
   resources:
     requests:
-      storage: 5Gi  # Adjust storage size as needed
+      storage: 5Gi
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -16,6 +17,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteMany
+  storageClassName: local-storage # Add storage class name
   resources:
     requests:
       storage: 1Gi

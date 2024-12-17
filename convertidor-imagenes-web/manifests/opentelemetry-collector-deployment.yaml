@@ -16,9 +16,9 @@ spec:
     spec:
       containers:
         - name: opentelemetry-collector
-          image: otel/opentelemetry-collector:latest
+          image: otel/opentelemetry-collector-contrib:0.90.0  # You can use a specific version or latest
           command:
-            - "/otelcol"
+            - "/otelcol-contrib"
             - "--config=/conf/config.yaml"
           volumeMounts:
             - name: otel-collector-config-vol

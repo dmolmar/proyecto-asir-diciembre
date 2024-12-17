@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: worker-deployment
 spec:
-  replicas: 3 # Initial number, managed by HPA
+  replicas: 3 # Start with the desired number of replicas
   selector:
     matchLabels:
       app: worker
@@ -13,17 +13,22 @@ spec:
         app: worker
     spec:
       affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: kubernetes.io/hostname
-                operator: NotIn
-                values: [] # Will be dynamically populated by the script or operator
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - worker
+              topologyKey: "kubernetes.io/hostname"
       containers:
       - name: worker-container
-        image: your-docker-registry/images-api:latest # Replace with your image
-        command: ["python", "-u", "worker.py"]
+        image: dmolmar/images-api:latest # Use your image here
+        imagePullPolicy: Always
+        command: ["python", "worker.py"]
         env:
         - name: SECRET_KEY
           valueFrom:

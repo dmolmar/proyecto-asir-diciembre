@@ -17,23 +17,20 @@ data:
 
     exporters:
       prometheus:
-        endpoint: "0.0.0.0:8889" # Expose Prometheus metrics on this port
+        endpoint: "0.0.0.0:8889"
         namespace: "images-api"
         const_labels:
           label1: "this-is-a-constant-label"
-      logging:
-        loglevel: info
-      jaeger:
-        endpoint: jaeger-all-in-one-collector:14250 # Update with your Jaeger endpoint if it's different
-        insecure: true
+      debug: # Changed from logging to debug
+        verbosity: detailed  # Add verbosity level
 
     service:
       pipelines:
         traces:
           receivers: [otlp]
           processors: [batch]
-          exporters: [jaeger, logging]
+          exporters: [debug] # Changed from logging to debug
         metrics:
           receivers: [otlp]
           processors: [batch]
-          exporters: [prometheus, logging]
+          exporters: [prometheus, debug] # Changed from logging to debug

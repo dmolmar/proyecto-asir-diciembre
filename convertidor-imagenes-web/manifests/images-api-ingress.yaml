@@ -5,7 +5,7 @@ metadata:
   annotations:
     konghq.com/strip-path: "true"
 spec:
-  ingressClassName: kong
+  ingressClassName: kong # This should be "kong"
   rules:
   - http:
       paths:

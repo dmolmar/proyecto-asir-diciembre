@@ -82,9 +82,13 @@
             if (isLoggedIn()) {
                 loginForm.style.display = 'none';
                 logoutButton.style.display = 'block';
+                convertButton.style.display = 'block'; // Show convert button
+                dropArea.classList.remove('disabled'); // Enable drop area
             } else {
                 loginForm.style.display = 'block';
                 logoutButton.style.display = 'none';
+                convertButton.style.display = 'none'; // Hide convert button
+                dropArea.classList.add('disabled'); // Disable drop area
             }
         }
 
@@ -157,11 +161,17 @@
                     listItem = document.createElement('li');
                     listItem.classList.add('file-item');
                     listItem.id = `file-item-${key}`;
+
+                    // Extract file extension using regular expression
+                    const match = file.name.match(/\.([0-9a-z]+)(?:[\?#]|$)/i);
+                    const fileExtension = match ? match[1].toLowerCase() : '';
+
+                    // ... rest of the code ...
                     listItem.innerHTML = `
                         <img src="${thumbnail}" alt="Thumbnail" class="thumbnail">
                         <div class="file-info">
                             <p><strong>Nombre:</strong> ${file.name}</p>
-                            <p><strong>Extensión:</strong> ${file.name.split('.').pop()}</p>
+                            <p><strong>Extensión:</strong> ${fileExtension}</p>
                             <p><strong>Tamaño:</strong> ${formatFileSize(file.size)}</p>
                             <div class="file-settings">
                                 <label for="quality-${key}">Calidad:</label>
@@ -226,6 +236,10 @@
         }
 
         function handleFiles(files) {
+            if (!isLoggedIn()) {
+                alert('Please log in to upload files.');
+                return;
+            }
             uploadedFiles = {};
             processedFiles = {};
             for (let i = 0; i < files.length; i++) {
@@ -243,6 +257,10 @@
         }
 
         function uploadFiles() {
+            if (!isLoggedIn()) {
+                alert('Please log in to convert images.');
+                return;
+            }
             if (isProcessing) {
                 return;
             }
@@ -307,18 +325,23 @@
             })
             .then(response => {
                 if (!response.ok) {
-                  return response.json().then(data => {
+                return response.json().then(data => {
                     if (response.status === 401) {
-                      localStorage.removeItem('jwtToken'); // Remove token
-                      updateUI(); // Update UI to logged-out state
-                      throw new Error('Error: Debes iniciar sesión para convertir imágenes. Tu sesión ha expirado.');
+                    // Check for specific error message from the server
+                    if (data.error === 'missing_token' || data.error === 'expired_token' || data.error === 'invalid_token') {
+                        localStorage.removeItem('jwtToken'); // Remove token
+                        updateUI(); // Update UI to logged-out state
+                        throw new Error('Error: Debes iniciar sesión para convertir imágenes. Tu sesión ha expirado.');
                     } else {
-                      throw new Error(data.error || 'Network response was not ok');
+                        throw new Error(data.error || 'Network response was not ok');
                     }
-                  });
+                    } else {
+                    throw new Error(data.error || 'Network response was not ok');
+                    }
+                });
                 }
                 return response.json();
-              })
+            })
             .then(data => {
                 console.log("Respuesta del servidor:", data); // Inspect server response
                 if (data.error) {
@@ -327,26 +350,16 @@
                     resetState();
                 } else {
                     errorElement.classList.remove('show');
-                    if (data && data.uploaded_files_info && Array.isArray(data.uploaded_files_info)) {
-                        jobIds = data.job_ids;
+                    if (data && data.request_id && data.uploaded_files_info && Array.isArray(data.uploaded_files_info)) {
+                        const requestId = data.request_id;
                         progressContainer.style.display = 'block';
                         window.onbeforeunload = function() {
                             return "Hay un proceso de conversión en curso, ¿seguro que quieres salir de la página?";
                         };
                         completedImages = 0;
-                        progressBar.style.width = '0%'; // Reset progress bar
-                        progressText.textContent = 'Procesando imágenes...'; // Reset progress text
-                        for (const fileInfo of data.uploaded_files_info) {
-                            const key = fileInfo.key;
-                            if (uploadedFiles[key]) {
-                                processedFiles[key] = {
-                                    status: 'processing',
-                                    jobId: jobIds.pop()
-                                };
-                                console.log(`Assigned job ID ${processedFiles[key].jobId} to file key ${key}`);
-                                checkProgress(key);
-                            }
-                        }
+                        progressBar.style.width = '0%';
+                        progressText.textContent = 'Procesando imágenes...';
+                        checkProgress(requestId); // Pass the request ID to checkProgress
                     } else {
                         console.error('Error: La respuesta del servidor no contiene uploaded_files_info o no es un array.');
                         resetState();
@@ -374,6 +387,10 @@
             e.preventDefault();
             dropArea.classList.remove('dragover');
             if (!isProcessing) {
+                if (!isLoggedIn()) {
+                    alert('Please log in to upload files.');
+                    return;
+                }
                 const files = e.dataTransfer.files;
                 fileInput.files = files;
                 handleFiles(files);
@@ -381,7 +398,11 @@
         });
 
         dropArea.addEventListener('click', () => {
-            if(!isProcessing){
+            if (!isProcessing) {
+                if (!isLoggedIn()) {
+                    alert('Please log in to upload files.');
+                    return;
+                }
                 fileInput.click();
             }
         });
@@ -398,97 +419,118 @@
            uploadFiles();
         });
 
-        async function checkProgress(key) {
-            const jobId = processedFiles[key].jobId;
-            console.log(`Checking progress for file key ${key}, job ID: ${jobId}`);
+        async function checkProgress(requestId) {
+            console.log(`Checking progress for request ID: ${requestId}`);
             try {
                 const token = localStorage.getItem('jwtToken');
-                console.log('Token from local storage:', token);
                 if (!token) {
                     throw new Error('No JWT token found in local storage');
                 }
-                const encodedToken = encodeURIComponent(token);
                 const headers = {
                     'Authorization': `Bearer ${token}`
                 };
-                const response = await fetch(`/progress/${jobId}`, { headers: headers });
+
+                const response = await fetch(`/progress/${requestId}`, { headers: headers });
                 if (!response.ok) {
                     if (response.status === 401) {
-                        localStorage.removeItem('jwtToken'); // Remove the token
-                        updateUI(); // Update the UI to reflect logged-out state
-                        throw new Error('Error: Debes iniciar sesión para convertir imágenes. Tu sesión ha expirado.'); // Provide a more informative error message
+                        localStorage.removeItem('jwtToken');
+                        updateUI();
+                        throw new Error('Error: Your session has expired. Please log in again.');
                     } else {
                         throw new Error(`HTTP error! status: ${response.status}`);
                     }
                 }
+
                 const data = await response.json();
-                if (data.status === 'finished' && data.result) {
-                    completedImages++;
-                    const downloadButtonContainer = document.getElementById(`download-buttons-${key}`);
-                    // Remove existing buttons
-                    while (downloadButtonContainer.firstChild) {
-                        downloadButtonContainer.removeChild(downloadButtonContainer.firstChild);
-                    }
-                    const file = uploadedFiles[key];
-                    const outputFormat = document.getElementById(`output_format-${key}`).value;
-                    const fileExtension = outputFormat === 'original' ? file.name.split('.').pop() : outputFormat;
-                    const newTabLink = document.createElement('a');
-                    newTabLink.href = `/file/${jobId}?token=${encodedToken}`;
-                    newTabLink.target = "_blank";
-                    newTabLink.textContent = 'Ver';
-                    downloadButtonContainer.appendChild(newTabLink);
-                    const downloadLink = document.createElement('a');
-                    downloadLink.href = `/download/${jobId}?token=${encodedToken}`;
-                    downloadLink.download = `${file.name.split('.')[0]}.${fileExtension}`;
-                    downloadLink.textContent = 'Descargar';
-                    downloadButtonContainer.appendChild(downloadLink);
-                    downloadButtonContainer.style.display = 'inline-block';
-                    processedFiles[key] = {
-                        ...file,
-                        status: 'processed',
-                        jobId: jobId,
-                        quality: parseInt(document.getElementById(`quality-${key}`).value),
-                        resolution: parseInt(document.getElementById(`resolution-${key}`).value),
-                        output_format: outputFormat
-                    };
+                console.log("Progress data:", data);
+
+                if (data.status === 'finished') {
+                    completedImages = data.completed_jobs;
                     const progress = Math.round((completedImages / totalImagesToProcess) * 100);
                     progressBar.style.width = `${progress}%`;
-                    progressText.textContent = `Procesando imágenes... ${progress}%`;
-                    if (completedImages === totalImagesToProcess) {
-                        progressContainer.style.display = 'none';
-                        progressText.textContent = ''; // Clear the text
-                        resetState();
+                    progressText.textContent = `Processing images... ${progress}%`;
+
+                    // Update the UI for each file
+                    for (let i = 0; i < data.total_jobs; i++) {
+                        const fileKey = Object.keys(uploadedFiles)[i];
+                        const fileStatus = data.statuses[i];
+                        const jobId = data.job_ids[i];
+
+                        if (fileStatus === 'succeeded') {
+                            updateUIDownloadLink(fileKey, jobId);
+                        } else if (fileStatus === 'failed') {
+                            updateUIError(fileKey);
+                        }
                     }
-                } else if (data.status === 'failed' || (data.status === 'finished' && !data.result)) {
-                    progressText.textContent = `Error al procesar la imagen: ${data.error || 'Error Desconocido'}`;
-                    const listItem = document.getElementById(`file-item-${key}`);
-                    if (listItem) {
-                        listItem.style.backgroundColor = 'lightcoral';
-                    }
-                    processedFiles[key] = {
-                        ...uploadedFiles[key],
-                        status: 'failed',
-                        jobId: jobId,
-                        quality: parseInt(document.getElementById(`quality-${key}`).value),
-                        resolution: parseInt(document.getElementById(`resolution-${key}`).value),
-                        output_format: document.getElementById(`output_format-${key}`).value
-                    };
-                    if (completedImages === totalImagesToProcess) {
-                        progressContainer.style.display = 'none';
-                        progressText.textContent = ''; // Clear the text
-                        resetState();
-                    }
+
+                    progressContainer.style.display = 'none';
+                    progressText.textContent = '';
+                    resetState();
                 } else {
+                    completedImages = data.completed_jobs;
                     const progress = Math.round((completedImages / totalImagesToProcess) * 100);
                     progressBar.style.width = `${progress}%`;
-                    progressText.textContent = `Procesando imágenes... ${progress}%`;
-                    setTimeout(() => checkProgress(key), 500);
+                    progressText.textContent = `Processing images... ${progress}%`;
+                    setTimeout(() => checkProgress(requestId), 500);
                 }
             } catch (error) {
-                console.error('Error al verificar el progreso:', error);
-                progressText.textContent = error.message; // Display the error message
+                console.error('Error checking progress:', error);
+                progressText.textContent = error.message;
                 resetState();
             }
+        }
+
+        async function updateUIDownloadLink(fileKey, jobId) {
+            const downloadButtonContainer = document.getElementById(`download-buttons-${fileKey}`);
+            while (downloadButtonContainer.firstChild) {
+                downloadButtonContainer.removeChild(downloadButtonContainer.firstChild);
+            }
+            const encodedToken = encodeURIComponent(localStorage.getItem('jwtToken'));
+            const headers = {
+                'Authorization': `Bearer ${localStorage.getItem('jwtToken')}`
+            };
+            const jobResultResponse = await fetch(`/download/${jobId}?token=${encodedToken}`, { headers: headers });
+            if (!jobResultResponse.ok) {
+                throw new Error(`HTTP error! status: ${jobResultResponse.status}`);
+            }
+            const jobResult = await jobResultResponse.json();
+            if (jobResult && jobResult.success) {
+                const outputFilename = jobResult.output_filename;
+                const newTabLink = document.createElement('a');
+                newTabLink.href = `/file/${jobId}?token=${encodedToken}`;
+                newTabLink.target = "_blank";
+                newTabLink.textContent = 'View';
+                downloadButtonContainer.appendChild(newTabLink);
+                const downloadLink = document.createElement('a');
+                downloadLink.href = `/download/${jobId}?token=${encodedToken}`;
+                downloadLink.download = outputFilename;
+                downloadLink.textContent = 'Download';
+                downloadButtonContainer.appendChild(downloadLink);
+                downloadButtonContainer.style.display = 'inline-block';
+                processedFiles[fileKey] = {
+                    ...uploadedFiles[fileKey],
+                    status: 'processed',
+                    jobId: jobId,
+                    quality: parseInt(document.getElementById(`quality-${fileKey}`).value),
+                    resolution: parseInt(document.getElementById(`resolution-${fileKey}`).value),
+                    output_format: document.getElementById(`output_format-${fileKey}`).value
+                };
+            }
+        }
+
+        function updateUIError(fileKey) {
+            progressText.textContent = `Error processing image`;
+            const listItem = document.getElementById(`file-item-${fileKey}`);
+            if (listItem) {
+                listItem.style.backgroundColor = 'lightcoral';
+            }
+            processedFiles[fileKey] = {
+                ...uploadedFiles[fileKey],
+                status: 'failed',
+                quality: parseInt(document.getElementById(`quality-${fileKey}`).value),
+                resolution: parseInt(document.getElementById(`resolution-${fileKey}`).value),
+                output_format: document.getElementById(`output_format-${fileKey}`).value
+            };
         }
 
         function resetState() {

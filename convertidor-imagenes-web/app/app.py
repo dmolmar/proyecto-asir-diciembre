@@ -7,6 +7,7 @@ from io import BytesIO
 import redis
 from rq import Queue, Retry
 from rq.exceptions import NoSuchJobError
+import redis.exceptions
 import zipfile
 from datetime import datetime, timedelta
 import base64
@@ -22,6 +23,7 @@ from urllib.parse import unquote
 from concurrent.futures import ThreadPoolExecutor
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
+from collections import defaultdict
 
 from opentelemetry import trace, metrics
 from opentelemetry.sdk.trace import TracerProvider
@@ -36,6 +38,8 @@ from opentelemetry.instrumentation.requests import RequestsInstrumentor
 from opentelemetry.instrumentation.redis import RedisInstrumentor
 from opentelemetry.instrumentation.wsgi import collect_request_attributes
 
+from tasks import process_image
+
 app = Flask(__name__)
 
 # Configure logging
@@ -43,6 +47,10 @@ handler = logging.StreamHandler()
 handler.setLevel(logging.DEBUG)
 app.logger.addHandler(handler)
 app.logger.setLevel(logging.DEBUG)
+
+# Set environment variables for paths (needed for tasks.py)
+os.environ['UPLOAD_FOLDER'] = 'uploads'
+os.environ['TEMP_UPLOAD_FOLDER'] = 'temp_uploads'
 
 UPLOAD_FOLDER = 'uploads'
 TEMP_UPLOAD_FOLDER = 'temp_uploads'
@@ -55,17 +63,11 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(TEMP_UPLOAD_FOLDER, exist_ok=True)
 CLEANUP_INTERVAL = 60  # 1 Minute
 SECRET_KEY = os.getenv('SECRET_KEY', 'Arcueid')
-RESERVED_RAM_MB = 1024
+RESERVED_RAM_MB = 256
 
 # Redis setup (updated for Kubernetes service)
 redis_conn = redis.Redis(host='redis-service', port=6379)  # Use the service name
 q = Queue(connection=redis_conn, default_timeout=360)
-
-# Thread pool executor for handling file uploads and initial processing
-executor = ThreadPoolExecutor(max_workers=4)  # Adjust max_workers based on your system
-
-# Mutex to ensure only one worker is active at a time
-worker_lock = Lock()
 
 # Kubernetes API client
 config.load_incluster_config()  # Use incluster config when running inside Kubernetes
@@ -82,7 +84,7 @@ trace.set_tracer_provider(trace_provider)
 tracer = trace.get_tracer(__name__)
 
 # Metrics Provider
-metric_exporter = OTLPMetricExporter(endpoint="opentelemetry-collector-service:4317", insecure=True)
+metric_exporter = OTLPMetricExporter(endpoint="opentelemetry-collector-service:4318", insecure=True)
 metric_reader = PeriodicExportingMetricReader(metric_exporter)
 meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
 metrics.set_meter_provider(meter_provider)
@@ -192,9 +194,9 @@ def create_kubernetes_job(file_path, output_format, quality, resolution_percenta
                     containers=[
                         client.V1Container(
                             name="worker-container",
-                            image="your-docker-registry/images-api:latest",  # Replace with your image
+                            image="dmolmar/images-api:latest",  # Replace with your image
                             command=["python", "-u", "worker.py"],
-                            args=[file_path, output_format, str(quality), str(resolution_percentage), filename],
+                            args=[file_path, output_format, str(quality), str(resolution_percentage), filename], # Pass arguments here
                             env=[
                                 client.V1EnvVar(
                                     name="SECRET_KEY",
@@ -205,7 +207,6 @@ def create_kubernetes_job(file_path, output_format, quality, resolution_percenta
                                         )
                                     )
                                 ),
-                                # Add REDIS_URL environment variable for the worker
                                 client.V1EnvVar(
                                     name="REDIS_URL",
                                     value="redis://redis-service:6379"
@@ -228,50 +229,16 @@ def create_kubernetes_job(file_path, output_format, quality, resolution_percenta
                     ],
                 )
             ),
-            backoff_limit=3,  # Number of retries before the job fails
-            ttl_seconds_after_finished=60,  # Optional: Delete completed jobs after 60 seconds
+            backoff_limit=3,
+            ttl_seconds_after_finished=60,
         )
     )
     try:
-        batch_v1.create_namespaced_job(namespace="default", body=job)  # Use appropriate namespace
+        batch_v1.create_namespaced_job(namespace="convertidor-imagenes", body=job)  # Ensure correct namespace
         return job_name
     except ApiException as e:
         app.logger.error(f"Error creating Kubernetes Job: {e}")
         return None
-
-def process_uploaded_file(file, file_key, quality, resolution_percentage, output_format, request_id):
-    if file and allowed_file(file.filename):
-        if file.content_length > MAX_FILE_SIZE:
-            return {'error': f'El archivo {file.filename} excede el tamaño máximo de {MAX_FILE_SIZE / (1024 * 1024)} MB.'}
-        try:
-            unique_filename = str(uuid.uuid4()) + '.' + file.filename.rsplit('.', 1)[1].lower()
-            temp_path = os.path.join(TEMP_UPLOAD_FOLDER, unique_filename)
-            file.save(temp_path)
-            image = Image.open(temp_path)
-            if image.width * image.height > MAX_PIXELS:
-                os.remove(temp_path)
-                return {'error': f'El archivo {file.filename} excede el tamaño máximo de {MAX_PIXELS / 1000000} MP.'}
-
-            # Create Kubernetes Job instead of enqueuing in RQ
-            job_name = create_kubernetes_job(temp_path, output_format, quality, resolution_percentage, file.filename, request_id)
-            if job_name:
-                return {
-                    'job_name': job_name,
-                    'file_info': {
-                        'key': file_key,
-                        'name': file.filename,
-                        'extension': file.filename.rsplit('.', 1)[1].lower(),
-                        'resolution': f"{image.width}x{image.height}",
-                        'size': file.content_length,
-                    }
-                }
-            else:
-                return {'error': f"Error creating job for {file.filename}"}
-        except Exception as e:
-            app.logger.error(f"Error processing {file.filename}: {e}")
-            return {'error': f"Error processing {file.filename}: {e}"}
-    else:
-        return {'error': f'Archivo {file.filename} no es permitido o no se pudo procesar.'}
 
 @app.route('/convert', methods=['POST'])
 @requires_auth
@@ -279,18 +246,19 @@ def convert():
     with tracer.start_as_current_span("convert-route"):
         request_counter.add(1, {"endpoint": "/convert"})
         if 'files' not in request.files:
-            return jsonify({'error': 'No se han subido archivos.'}), 400
+            return jsonify({'error': 'No files uploaded.'}), 400
 
         files = request.files.getlist('files')
         if not files:
-            return jsonify({'error': 'No se han subido archivos.'}), 400
+            return jsonify({'error': 'No files uploaded.'}), 400
 
         if len(files) > MAX_FILES:
-            return jsonify({'error': f'Se ha excedido el número máximo de archivos ({MAX_FILES}).'}), 400
+            return jsonify({'error': f'Maximum number of files exceeded ({MAX_FILES}).'}), 400
 
         request_id = str(uuid.uuid4())  # Generate a unique ID for this request
-        job_names = []
+        job_ids = []
         uploaded_files_info = []
+        file_job_map = {} # Map file keys to job IDs
 
         try:
             check_resource_availability()  # Check resources before enqueuing
@@ -303,53 +271,72 @@ def convert():
             resolution_percentage = float(request.form.get(f'resolution-{file_key}', 100)) / 100
             output_format = request.form.get(f'output_format-{file_key}', 'original').upper()
 
-            # Submit the file processing to the executor
-            future = executor.submit(process_uploaded_file, file, file_key, quality, resolution_percentage, output_format, request_id)
-            result = future.result()  # Get the result from the future (blocking)
+            if file and allowed_file(file.filename):
+                if file.content_length > MAX_FILE_SIZE:
+                    return jsonify({'error': f'File {file.filename} exceeds the maximum size of {MAX_FILE_SIZE / (1024 * 1024)} MB.'}), 400
+                try:
+                    unique_filename = str(uuid.uuid4()) + '.' + file.filename.rsplit('.', 1)[1].lower()
+                    temp_path = os.path.join(TEMP_UPLOAD_FOLDER, unique_filename)
+                    file.save(temp_path)
 
-            if result and 'error' not in result:
-                job_names.append(result['job_name'])
-                uploaded_files_info.append(result['file_info'])
-            elif result and 'error' in result:
-                return jsonify({'error': result['error']}), 500
+                    image = Image.open(temp_path)
+                    if image.width * image.height > MAX_PIXELS:
+                        os.remove(temp_path)
+                        return jsonify({'error': f'File {file.filename} exceeds the maximum size of {MAX_PIXELS / 1000000} MP.'}), 400
+                    
+                    job = q.enqueue(process_image, temp_path, output_format, quality, resolution_percentage, file.filename, job_timeout=180)
+                    job_ids.append(job.id)
+                    file_job_map[file_key] = job.id # Associate file key with job ID
+                    uploaded_files_info.append({
+                        'key': file_key,
+                        'name': file.filename,
+                        'extension': file.filename.rsplit('.', 1)[1].lower(),
+                        'resolution': f"{image.width}x{image.height}",
+                        'size': file.content_length,
+                    })
+                except Exception as e:
+                    app.logger.error(f"Error processing {file.filename}: {e}")
+                    return jsonify({'error': f"Error processing {file.filename}: {e}"}), 500
 
         # Store job names and request ID in Redis for tracking
-        redis_conn.set(f"request:{request_id}:jobs", ",".join(job_names))
-        redis_conn.set(f"request:{request_id}:total", len(job_names))
+        redis_conn.set(f"request:{request_id}:jobs", ",".join(job_ids))
+        redis_conn.set(f"request:{request_id}:total", len(job_ids))
         redis_conn.set(f"request:{request_id}:completed", 0)
 
-        app.logger.info(f"Request ID: {request_id}, Job Names: {job_names}")
-        return jsonify({'request_id': request_id, 'uploaded_files_info': uploaded_files_info})
+        app.logger.info(f"Request ID: {request_id}, Job Names: {job_ids}")
+        return jsonify({'request_id': request_id, 'uploaded_files_info': uploaded_files_info, 'file_job_map': file_job_map})
 
-@app.route('/download/<job_name>')
+@app.route('/download/<job_id>')
 @requires_auth
-def download_file(job_name):
+def download_file(job_id):
     try:
-        # Get job details from Kubernetes (alternative to fetching from RQ)
-        job = batch_v1.read_namespaced_job(job_name, "default")  # Replace "default" with the correct namespace
-        if job.status.succeeded is not None and job.status.succeeded > 0:
-            # Extract output path from job (you might need to adjust this based on how you store it in worker.py)
-            output_filename = job.metadata.annotations.get("output_filename")
-            if output_filename:
-                output_path = os.path.join(UPLOAD_FOLDER, output_filename)
-                if os.path.exists(output_path):
-                    return send_file(output_path, download_name=output_filename, as_attachment=True)
-                else:
-                    return "File not found", 404
+        job = q.fetch_job(job_id)
+        if job is None:
+            return "Job not found", 404
+        
+        if job.is_failed:
+            return "Job failed", 500
+
+        if job.result:
+            result = job.result
+            if result['success']:
+                output_path = result['output_path']
+                output_filename = result['output_filename']
+                return send_file(output_path, download_name=output_filename, as_attachment=True)
             else:
-                return "Output filename not found in job metadata", 500
+                return f"Error processing image: {result['error']}", 500
         else:
-            return "Job not successful", 404
-    except ApiException as e:
-        app.logger.error(f"Error getting job status for download: {e}")
-        return "Error retrieving job information", 500
+            return "Job not finished yet", 202
+
+    except NoSuchJobError:
+        return "Job not found", 404
     except Exception as e:
-        app.logger.error(f"Error handling job {job_name}: {e}")
+        app.logger.error(f"Error handling job {job_id}: {e}")
         return "Error interno del servidor", 500
 
-@app.route('/file/<job_name>')
+@app.route('/file/<job_id>')
 @requires_auth
-def get_file(job_name):
+def get_file(job_id):
     try:
         token = request.args.get('token')
         if token:
@@ -361,57 +348,73 @@ def get_file(job_name):
             except jwt.InvalidTokenError:
                 return jsonify({'message': 'Invalid token!', 'error': 'invalid_token'}), 401
 
-        # Get job details from Kubernetes
-        job = batch_v1.read_namespaced_job(job_name, "default")
-        if job.status.succeeded is not None and job.status.succeeded > 0:
-            # Extract output path from job metadata
-            output_filename = job.metadata.annotations.get("output_filename")
-            if output_filename:
-                output_path = os.path.join(UPLOAD_FOLDER, output_filename)
-                if os.path.exists(output_path):
-                    return send_file(output_path, mimetype='image/jpeg', as_attachment=False, download_name=output_filename)
-                else:
-                    return "File not found", 404
+        job = q.fetch_job(job_id)
+        if job is None:
+            return jsonify({'status': 'not found'}), 404
+        
+        if job.is_failed:
+            return jsonify({'status': 'failed'}), 500
+
+        if job.result:
+            result = job.result
+            if result['success']:
+                output_path = result['output_path']
+                output_filename = result['output_filename']
+                return send_file(output_path, mimetype='image/jpeg', as_attachment=False, download_name=output_filename)
             else:
-                return "Output filename not found in job metadata", 500
+                return jsonify({'status': 'error', 'message': f"Error processing image: {result['error']}"}), 500
         else:
-            return "Job not successful", 404
-    except ApiException as e:
-        app.logger.error(f"Error getting job status for file retrieval: {e}")
-        return jsonify({'status': 'error', 'result': False, 'message': 'Error retrieving job information'}), 500
+            return jsonify({'status': 'processing'}), 202
+
+    except NoSuchJobError:
+        return jsonify({'status': 'not found'}), 404
     except Exception as e:
-        app.logger.error(f"Error handling job {job_name}: {e}")
-        return jsonify({'status': 'error', 'result': False, 'message': 'Internal server error'}), 500
+        app.logger.error(f"Error handling job {job_id}: {e}")
+        return jsonify({'status': 'error', 'message': 'Internal server error'}), 500
 
 @app.route('/progress/<request_id>')
 @requires_auth
 def progress(request_id):
-    job_names_str = redis_conn.get(f"request:{request_id}:jobs")
-    if not job_names_str:
+    job_ids_str = redis_conn.get(f"request:{request_id}:jobs")
+    if not job_ids_str:
         return jsonify({'status': 'not found'}), 404
 
-    job_names = job_names_str.decode().split(",")
+    job_ids = job_ids_str.decode().split(",")
     completed_count = 0
     failed_count = 0
     statuses = []
+    job_id_list = []
 
-    for job_name in job_names:
+    for job_id in job_ids:
         try:
-            job = batch_v1.read_namespaced_job_status(job_name, "default")  # Use appropriate namespace
-            status = job.status
-            if status.succeeded is not None and status.succeeded > 0:
+            job = q.fetch_job(job_id, connection=redis_conn)
+            if job is None:
+                statuses.append("not found")
+                job_id_list.append(None)
+            elif job.is_finished:
                 completed_count += 1
                 statuses.append("succeeded")
-            elif status.failed is not None and status.failed > 0:
+                job_id_list.append(job_id)
+            elif job.is_failed:
                 failed_count += 1
                 statuses.append("failed")
+                job_id_list.append(job_id)
             else:
                 statuses.append("running")
-        except ApiException as e:
+                job_id_list.append(job_id)
+        except redis.exceptions.ConnectionError as e:
+            app.logger.error(f"Redis connection error: {e}")
+            statuses.append("error")
+            job_id_list.append(None)
+        except NoSuchJobError:
+            statuses.append("not found")
+            job_id_list.append(None)
+        except Exception as e:
             app.logger.error(f"Error getting job status: {e}")
             statuses.append("error")
+            job_id_list.append(None)
 
-    total_jobs = len(job_names)
+    total_jobs = len(job_ids)
     completed_percentage = int((completed_count / total_jobs) * 100) if total_jobs > 0 else 0
 
     # Update progress in Redis (optional, for more detailed tracking)
@@ -422,6 +425,7 @@ def progress(request_id):
         'completed_jobs': completed_count,
         'failed_jobs': failed_count,
         'statuses': statuses,
+        'job_ids': job_id_list,
         'progress': completed_percentage,
         'status': 'finished' if completed_count + failed_count == total_jobs else 'processing'
     })

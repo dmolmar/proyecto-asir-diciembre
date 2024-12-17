@@ -24,17 +24,23 @@ spec:
           mountPath: /etc/grafana/provisioning/datasources
         - name: grafana-dashboards
           mountPath: /etc/grafana/provisioning/dashboards
-        - name: dashboards-config
-          mountPath: /var/lib/grafana/dashboards/default # Mount the dashboards directory here
+        - name: dashboards-json
+          mountPath: /var/lib/grafana/dashboards/default
+        - name: grafana-config-volume
+          mountPath: /etc/grafana/grafana.ini
+          subPath: grafana.ini
       volumes:
       - name: grafana-storage
         emptyDir: {}
       - name: grafana-datasources
         configMap:
           name: grafana-datasource
-      - name: grafana-dashboards
+      - name: grafana-dashboards # Corrected name here
         configMap:
-          name: grafana-dashboard-provider
-      - name: dashboards-config
+          name: grafana-dashboards # Corrected name here
+      - name: dashboards-json
         configMap:
-          name: grafana-dashboards # This ConfigMap will be created dynamically
+          name: grafana-dashboards
+      - name: grafana-config-volume
+        configMap:
+          name: grafana-config
