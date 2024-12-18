@@ -4,7 +4,7 @@ metadata:
   name: worker-deployment
   namespace: convertidor-imagenes
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: worker
@@ -47,13 +47,13 @@ spec:
             memory: "1Gi" # Adjust as needed
         volumeMounts:
         - name: uploads
-          mountPath: /app/uploads
+          mountPath: /data/uploads
         - name: temp-uploads
-          mountPath: /app/temp_uploads
+          mountPath: /data/temp-uploads  # Use temp-uploads (no underscore)
       volumes:
       - name: uploads
         persistentVolumeClaim:
           claimName: uploads-pvc
       - name: temp-uploads
         persistentVolumeClaim:
-          claimName: temp-uploads-pvc
+          claimName: temp-uploads-pvc  # Use temp-uploads (no underscore)

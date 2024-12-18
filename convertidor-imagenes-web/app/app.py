@@ -48,18 +48,18 @@ app.logger.addHandler(handler)
 app.logger.setLevel(logging.DEBUG)
 
 # Set environment variables for paths (needed for tasks.py)
-os.environ['UPLOAD_FOLDER'] = 'uploads'
-os.environ['TEMP_UPLOAD_FOLDER'] = 'temp_uploads'
+UPLOAD_FOLDER = '/data/uploads'
+TEMP_UPLOAD_FOLDER = '/data/temp-uploads'
+os.environ['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+os.environ['TEMP_UPLOAD_FOLDER'] = TEMP_UPLOAD_FOLDER
 
-UPLOAD_FOLDER = 'uploads'
-TEMP_UPLOAD_FOLDER = 'temp_uploads'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'ico', 'avif', 'svg', 'psd', 'raw'}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 MAX_PIXELS = 20000000  # 20 megapíxeles
 MAX_FILES = 50
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(TEMP_UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(TEMP_UPLOAD_FOLDER, exist_ok=True)  # Create temp-uploads (no underscore)
 CLEANUP_INTERVAL = 60  # 1 Minute
 SECRET_KEY = os.getenv('SECRET_KEY', 'Arcueid')
 RESERVED_RAM_MB = 256
@@ -199,12 +199,12 @@ def convert():
         request_id = str(uuid.uuid4())  # Generate a unique ID for this request
         job_ids = []
         uploaded_files_info = []
-        
+
         try:
             check_resource_availability()  # Check resources before enqueuing
         except ResourceLimitExceeded as e:
              return jsonify({'error': str(e)}), 503
-        
+
         for file in files:
             file_key = request.form.get('file_key')
             quality = int(request.form.get(f'quality-{file_key}', 95))
@@ -213,20 +213,10 @@ def convert():
 
             if file and allowed_file(file.filename):
                 if file.content_length > MAX_FILE_SIZE:
-                   return jsonify({'error': f'El archivo {file.filename} excede el tamaño máximo de {MAX_FILE_SIZE / (1024 * 1024)} MB.'}), 400
+                    return jsonify({'error': f'El archivo {file.filename} excede el tamaño máximo de {MAX_FILE_SIZE / (1024 * 1024)} MB.'}), 400
                 try:
-                    # Using UUID for temporary file name, but storing original filename in Redis
-                    unique_filename = str(uuid.uuid4()) + '.' + file.filename.rsplit('.', 1)[1].lower()
-                    temp_path = os.path.join(TEMP_UPLOAD_FOLDER, unique_filename)
-                    file.save(temp_path)
-                    
-                    image = Image.open(temp_path)
-                    if image.width * image.height > MAX_PIXELS:
-                        os.remove(temp_path)
-                        return jsonify({'error': f'El archivo {file.filename} excede el tamaño máximo de {MAX_PIXELS / 1000000} MP.'}), 400
-
-                    # Enqueue the job with retries
-                    job = q.enqueue(process_image, args=(temp_path, output_format, quality, resolution_percentage, file.filename),
+                    # Enqueue the job
+                    job = q.enqueue(process_image, args=(output_format, quality, resolution_percentage, file.filename),
                                     job_timeout=360,
                                     result_ttl=360,
                                     failure_ttl=360,
@@ -235,8 +225,23 @@ def convert():
                     job_ids.append(job_id)
                     app.logger.info(f"Enqueued job: {job_id} for file: {file.filename}")
 
+                    # Create a unique temporary file name using job_id
+                    unique_filename = f"{job_id}.{file.filename.rsplit('.', 1)[1].lower()}"
+                    temp_path = os.path.join(TEMP_UPLOAD_FOLDER, unique_filename)
+
+                    # Save the file temporarily
+                    file.seek(0) # Reset file pointer
+                    file.save(temp_path)
+
                     # Store the mapping between job ID and original filename in Redis
                     redis_conn.set(f"job:{job_id}:filename", file.filename)
+                    redis_conn.set(f"job:{job_id}:filekey", file_key)
+                    redis_conn.set(f"job:{job_id}:temppath", temp_path)
+
+                    image = Image.open(temp_path)
+                    if image.width * image.height > MAX_PIXELS:
+                        os.remove(temp_path)
+                        return jsonify({'error': f'El archivo {file.filename} excede el tamaño máximo de {MAX_PIXELS / 1000000} MP.'}), 400
 
                     uploaded_files_info.append({
                         'key': file_key,
@@ -277,7 +282,7 @@ def download_file(job_id):
             if not output_filename:
                 abort(500, description="Output filename not found")
 
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], output_filename)
+            file_path = os.path.join(UPLOAD_FOLDER, output_filename)
             if not os.path.exists(file_path):
                 abort(404, description=f"File not found: {output_filename}")
 
@@ -306,7 +311,7 @@ def get_file(job_id):
             if not output_filename:
                 abort(500, description="Output filename not found")
 
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], output_filename)
+            file_path = os.path.join(UPLOAD_FOLDER, output_filename)
 
             if not os.path.exists(file_path):
                 abort(404, description=f"File not found: {output_filename}")
@@ -345,7 +350,8 @@ def progress(request_id):
                         completed_jobs += 1
                         # Get the original filename from Redis
                         original_filename = redis_conn.get(f"job:{job_id}:filename").decode()
-                        results[job_id] = {'status': 'finished', 'result': job.result, 'original_filename': original_filename}
+                        file_key = redis_conn.get(f"job:{job_id}:filekey").decode()
+                        results[job_id] = {'status': 'finished', 'result': job.result, 'original_filename': original_filename, 'filekey': file_key}
                     elif job.is_failed:
                         failed_jobs += 1
                         results[job_id] = {'status': 'failed', 'error': job.exc_info}

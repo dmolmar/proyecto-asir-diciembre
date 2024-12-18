@@ -13,7 +13,7 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: temp-uploads-pvc
+  name: temp-uploads-pvc  # Use temp-uploads (no underscore)
 spec:
   accessModes:
     - ReadWriteMany
