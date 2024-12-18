@@ -4,7 +4,7 @@ metadata:
   name: images-api-deployment
   namespace: convertidor-imagenes
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: images-api

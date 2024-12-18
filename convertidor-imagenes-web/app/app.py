@@ -215,6 +215,7 @@ def convert():
                 if file.content_length > MAX_FILE_SIZE:
                    return jsonify({'error': f'El archivo {file.filename} excede el tamaño máximo de {MAX_FILE_SIZE / (1024 * 1024)} MB.'}), 400
                 try:
+                    # Using UUID for temporary file name, but storing original filename in Redis
                     unique_filename = str(uuid.uuid4()) + '.' + file.filename.rsplit('.', 1)[1].lower()
                     temp_path = os.path.join(TEMP_UPLOAD_FOLDER, unique_filename)
                     file.save(temp_path)
@@ -230,7 +231,12 @@ def convert():
                                     result_ttl=360,
                                     failure_ttl=360,
                                     retry=Retry(max=3, interval=[10, 30, 60]))
-                    job_ids.append(job.id)
+                    job_id = job.id
+                    job_ids.append(job_id)
+                    app.logger.info(f"Enqueued job: {job_id} for file: {file.filename}")
+
+                    # Store the mapping between job ID and original filename in Redis
+                    redis_conn.set(f"job:{job_id}:filename", file.filename)
 
                     uploaded_files_info.append({
                         'key': file_key,
@@ -248,8 +254,11 @@ def convert():
         redis_conn.set(f"request:{request_id}:total", len(job_ids))
         redis_conn.set(f"request:{request_id}:completed", 0)
 
+        # Create a results dictionary that includes job IDs
+        results = {job_id: {'status': 'processing'} for job_id in job_ids}
+
         app.logger.info(f"Request ID: {request_id}, Job Names: {job_ids}")
-        return jsonify({'request_id': request_id, 'uploaded_files_info': uploaded_files_info})
+        return jsonify({'request_id': request_id, 'uploaded_files_info': uploaded_files_info, 'results': results})
 
 @app.route('/download/<job_id>')
 @requires_auth
@@ -334,7 +343,9 @@ def progress(request_id):
 
                     if job.is_finished:
                         completed_jobs += 1
-                        results[job_id] = {'status': 'finished', 'result': job.result}
+                        # Get the original filename from Redis
+                        original_filename = redis_conn.get(f"job:{job_id}:filename").decode()
+                        results[job_id] = {'status': 'finished', 'result': job.result, 'original_filename': original_filename}
                     elif job.is_failed:
                         failed_jobs += 1
                         results[job_id] = {'status': 'failed', 'error': job.exc_info}

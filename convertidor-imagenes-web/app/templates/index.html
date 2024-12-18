@@ -72,6 +72,7 @@
         const logoutButton = document.getElementById('logoutButton');
         let totalImagesToProcess = 0; // Total number of images to be processed
         let globalRequestId = null; // Variable to store the request ID
+        let jobFileMap = {}; // Map to store job_id to fileKey mapping
 
         // Function to check if the user is logged in
         function isLoggedIn() {
@@ -141,7 +142,7 @@
                     const ctx = canvas.getContext('2d');
                     ctx.drawImage(img, 0, 0, width, height);
 
-                    callback(canvas.toDataURL('image/jpeg'));
+                    callback(canvas.toDataURL('image/jpeg'), img.width, img.height);
                 }
                 img.src = e.target.result;
             }
@@ -158,7 +159,7 @@
             const defaultOutputFormat = document.getElementById('output_format').value;
 
             if (!listItem) {
-                generateThumbnail(file, function(thumbnail) {
+                generateThumbnail(file, function(thumbnail, width, height) {
                     listItem = document.createElement('li');
                     listItem.classList.add('file-item');
                     listItem.id = `file-item-${key}`;
@@ -166,13 +167,15 @@
                     // Get file extension safely
                     const fileNameParts = file.name.split('.');
                     const fileExtension = fileNameParts.length > 1 ? fileNameParts.pop().toLowerCase() : ''; // Handle cases with no extension
+                    const fileResolution = `${width}x${height}`;
 
                     listItem.innerHTML = `
                         <img src="${thumbnail}" alt="Thumbnail" class="thumbnail">
                         <div class="file-info">
                             <p><strong>Nombre:</strong> ${file.name}</p>
-                            <p><strong>Extensión:</strong> ${fileExtension}</p> // Use the safe fileExtension variable
+                            <p><strong>Extensión:</strong> ${fileExtension}</p>
                             <p><strong>Tamaño:</strong> ${formatFileSize(file.size)}</p>
+                            <p><strong>Resolución:</strong> ${fileResolution}</p>
                             <div class="file-settings">
                                 <label for="quality-${key}">Calidad:</label>
                                 <input type="range" id="quality-${key}" name="quality-${key}" min="1" max="100" value="${processedFiles[key] ? processedFiles[key].quality : qualityInput.value}">
@@ -196,6 +199,7 @@
                         <button type="button" class="remove-file" data-key="${key}">X</button>
                         <div id="download-buttons-${key}" class="download-buttons"></div>
                     `;
+                    console.log("Creating download-buttons div with ID:", `download-buttons-${key}`);
                     filesList.appendChild(listItem);
 
                     document.getElementById(`quality-${key}`).addEventListener('input', function() {
@@ -219,7 +223,7 @@
                     });
                 });
             } else {
-                generateThumbnail(file, function(thumbnail) {
+                generateThumbnail(file, function(thumbnail, width, height) {
                     const thumbnailElement = listItem.querySelector('.thumbnail');
                     thumbnailElement.src = thumbnail;
 
@@ -231,6 +235,9 @@
 
                     const sizeElement = listItem.querySelector('.file-info p strong:nth-child(3)');
                     sizeElement.textContent = formatFileSize(file.size);
+
+                    const resolutionElement = listItem.querySelector('.file-info p strong:nth-child(4)');
+                    resolutionElement.textContent = `${width}x${height}`;
                 });
             }
         }
@@ -343,7 +350,7 @@
                 return response.json();
             })
             .then(data => {
-                console.log("Respuesta del servidor:", data); // Inspect server response
+                console.log("Respuesta del servidor:", data);
                 if (data.error) {
                     errorElement.textContent = data.error;
                     errorElement.classList.add('show');
@@ -351,14 +358,24 @@
                 } else {
                     errorElement.classList.remove('show');
                     if (data && data.uploaded_files_info && Array.isArray(data.uploaded_files_info)) {
-                        globalRequestId = data.request_id; // Store the request ID
+                        globalRequestId = data.request_id;
                         progressContainer.style.display = 'block';
                         window.onbeforeunload = function() {
                             return "Hay un proceso de conversión en curso, ¿seguro que quieres salir de la página?";
                         };
                         completedImages = 0;
-                        progressBar.style.width = '0%'; // Reset progress bar
-                        progressText.textContent = 'Procesando imágenes...'; // Reset progress text
+                        progressBar.style.width = '0%';
+                        progressText.textContent = 'Procesando imágenes...';
+
+                        // Create a mapping of job IDs to file keys
+                        jobFileMap = {};
+                        for (let i = 0; i < data.uploaded_files_info.length; i++) {
+                            const fileInfo = data.uploaded_files_info[i];
+                            const fileKey = fileInfo.key;
+                            const job_id = Object.keys(data.results)[i]; // Get the job_id by index
+                            jobFileMap[job_id] = fileKey;
+                        }
+
                         for (const fileInfo of data.uploaded_files_info) {
                             const key = fileInfo.key;
                             if (uploadedFiles[key]) {
@@ -367,7 +384,7 @@
                                 };
                             }
                         }
-                        checkProgress(globalRequestId); // Start checking progress with request_id
+                        checkProgress(globalRequestId);
                     } else {
                         console.error('Error: La respuesta del servidor no contiene uploaded_files_info o no es un array.');
                         resetState();
@@ -434,7 +451,6 @@
                 if (!token) {
                     throw new Error('No JWT token found in local storage');
                 }
-                const encodedToken = encodeURIComponent(token);
                 const headers = {
                     'Authorization': `Bearer ${token}`
                 };
@@ -464,39 +480,35 @@
                 progressBar.style.width = `${progress}%`;
                 progressText.textContent = `Procesando imágenes... ${progress}%`;
 
-                const promises = Object.keys(data.results).map(async (job_id) => {
+                for (const job_id of Object.keys(data.results)) {
                     const jobResult = data.results[job_id];
-                    const fileKey = Object.keys(uploadedFiles).find(key => job_id.startsWith(key));
+                    const fileKey = jobFileMap[job_id];
+
+                    console.log("Job ID:", job_id, "File Key:", fileKey, "Job Result:", jobResult); // Debug
 
                     if (jobResult.status === 'finished' && jobResult.result) {
                         const downloadButtonContainer = document.getElementById(`download-buttons-${fileKey}`);
-                        while (downloadButtonContainer.firstChild) {
-                            downloadButtonContainer.removeChild(downloadButtonContainer.firstChild);
-                        }
+                        if (downloadButtonContainer) {
+                            console.log("Found download-buttons div for job_id:", job_id);
+                            downloadButtonContainer.innerHTML = ''; // Clear existing buttons
 
-                        // Fetch the job result to get the output filename
-                        const jobResultResponse = await fetch(`/download/${job_id}?token=${encodedToken}`, { headers: headers });
-                        if (!jobResultResponse.ok) {
-                            throw new Error(`HTTP error! status: ${jobResultResponse.status}`);
-                        }
-                        const jobResultData = await jobResultResponse.blob(); // Change this line to get a blob
+                            const outputFilename = jobResult.result;
+                            const token = localStorage.getItem('jwtToken'); // Get the token
 
-                        if (jobResultData) {
-                            const url = window.URL.createObjectURL(jobResultData); // Create a URL for the blob
-                            const outputFilename = jobResult.result; // jobResult.result should contain the output filename
+                            // Create View link (passing token as query parameter)
+                            const viewLink = document.createElement('a');
+                            viewLink.href = `/file/${job_id}?token=${encodeURIComponent(token)}`; // Add token to URL
+                            viewLink.target = "_blank";
+                            viewLink.textContent = 'Ver';
+                            downloadButtonContainer.appendChild(viewLink);
 
-                            const newTabLink = document.createElement('a');
-                            newTabLink.href = url;
-                            newTabLink.target = "_blank";
-                            newTabLink.textContent = 'Ver';
-                            // No need to set the 'type' attribute for viewing in a new tab
-                            downloadButtonContainer.appendChild(newTabLink);
-
+                            // Create Download link (you can use this method or Option 2 for download)
                             const downloadLink = document.createElement('a');
-                            downloadLink.href = url;
-                            downloadLink.download = outputFilename; // Set the download attribute to the output filename
+                            downloadLink.href = `/download/${job_id}?token=${encodeURIComponent(token)}`; // Add token to URL
+                            downloadLink.download = outputFilename;
                             downloadLink.textContent = 'Descargar';
                             downloadButtonContainer.appendChild(downloadLink);
+
                             downloadButtonContainer.style.display = 'inline-block';
 
                             processedFiles[fileKey] = {
@@ -507,6 +519,8 @@
                                 resolution: parseInt(document.getElementById(`resolution-${fileKey}`).value),
                                 output_format: document.getElementById(`output_format-${fileKey}`).value
                             };
+                        } else {
+                            console.error("Could not find download-buttons div for job_id:", job_id, "and fileKey:", fileKey);
                         }
                     } else if (jobResult.status === 'failed') {
                         progressText.textContent = `Error al procesar la imagen: ${jobResult.error || 'Error Desconocido'}`;
@@ -524,17 +538,14 @@
                             output_format: document.getElementById(`output_format-${fileKey}`).value
                         };
                     }
-                });
-
-                // Wait for all promises to settle (either resolve or reject)
-                await Promise.allSettled(promises);
+                }
 
                 if (data.all_finished) {
                     progressContainer.style.display = 'none';
-                    progressText.textContent = ''; // Clear the text
-                    resetState(); // Call resetState only after all updates are done
+                    progressText.textContent = '';
+                    resetState();
                 } else {
-                    setTimeout(() => checkProgress(requestId), 1000); // Poll every second
+                    setTimeout(() => checkProgress(requestId), 1000);
                 }
 
             } catch (error) {
@@ -556,6 +567,7 @@
             progressText.textContent = ''; // Clear the text
             progressBar.style.width = '0%'; // Reset progress bar
             globalRequestId = null; // Reset global request ID
+            jobFileMap = {}; // Reset jobFileMap
         }
 
         window.onload = function() {

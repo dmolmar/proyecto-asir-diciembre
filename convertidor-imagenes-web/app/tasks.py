@@ -36,6 +36,7 @@ def process_image(file_path, output_format, quality, resolution_percentage, file
             image.save(output_path, format=output_format, optimize=True)
         
         tasks_logger.info(f"Saved processed image to {output_path}")
+        tasks_logger.info(f"Returning output filename: {output_filename}")
         return output_filename  # Return the filename of the processed image
 
     except Exception as e:
