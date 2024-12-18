@@ -367,21 +367,27 @@
                         progressBar.style.width = '0%';
                         progressText.textContent = 'Procesando imágenes...';
 
-                        // Create a mapping of job IDs to file keys
+                        // Create a mapping of job IDs to file keys (as an array)
                         jobFileMap = {};
                         for (let i = 0; i < data.uploaded_files_info.length; i++) {
                             const fileInfo = data.uploaded_files_info[i];
                             const fileKey = fileInfo.key;
                             const job_id = Object.keys(data.results)[i]; // Get the job_id by index
-                            jobFileMap[job_id] = fileKey;
+
+                            if (!jobFileMap[fileKey]) {
+                                jobFileMap[fileKey] = [];
+                            }
+                            jobFileMap[fileKey].push(job_id);
                         }
 
                         for (const fileInfo of data.uploaded_files_info) {
                             const key = fileInfo.key;
                             if (uploadedFiles[key]) {
-                                processedFiles[key] = {
+                                // Initialize as an array here
+                                processedFiles[key] = []; 
+                                processedFiles[key].push({
                                     status: 'processing'
-                                };
+                                });
                             }
                         }
                         checkProgress(globalRequestId);
@@ -392,10 +398,10 @@
                 }
             })
             .catch(error => {
-              console.error('Error:', error);
-              errorElement.textContent = error.message;
-              errorElement.classList.add('show');
-              resetState();
+            console.error('Error:', error);
+            errorElement.textContent = error.message;
+            errorElement.classList.add('show');
+            resetState();
             });
         }
 
@@ -480,63 +486,82 @@
                 progressBar.style.width = `${progress}%`;
                 progressText.textContent = `Procesando imágenes... ${progress}%`;
 
-                for (const job_id of Object.keys(data.results)) {
-                    const jobResult = data.results[job_id];
-                    const fileKey = jobFileMap[job_id];
+                // Iterate through fileKeys instead of job_ids
+                for (const fileKey in uploadedFiles) {
+                    if (uploadedFiles.hasOwnProperty(fileKey)) {
+                        const jobIds = jobFileMap[fileKey]; // Get all job IDs for this fileKey
 
-                    console.log("Job ID:", job_id, "File Key:", fileKey, "Job Result:", jobResult); // Debug
+                        if (!jobIds) continue;
 
-                    if (jobResult.status === 'finished' && jobResult.result) {
                         const downloadButtonContainer = document.getElementById(`download-buttons-${fileKey}`);
                         if (downloadButtonContainer) {
-                            console.log("Found download-buttons div for job_id:", job_id);
                             downloadButtonContainer.innerHTML = ''; // Clear existing buttons
 
-                            const outputFilename = jobResult.result;
-                            const token = localStorage.getItem('jwtToken'); // Get the token
+                            for (const job_id of jobIds) {
+                                const jobResult = data.results[job_id];
 
-                            // Create View link (passing token as query parameter)
-                            const viewLink = document.createElement('a');
-                            viewLink.href = `/file/${job_id}?token=${encodeURIComponent(token)}`; // Add token to URL
-                            viewLink.target = "_blank";
-                            viewLink.textContent = 'Ver';
-                            downloadButtonContainer.appendChild(viewLink);
+                                console.log("Job ID:", job_id, "File Key:", fileKey, "Job Result:", jobResult);
 
-                            // Create Download link (you can use this method or Option 2 for download)
-                            const downloadLink = document.createElement('a');
-                            downloadLink.href = `/download/${job_id}?token=${encodeURIComponent(token)}`; // Add token to URL
-                            downloadLink.download = outputFilename;
-                            downloadLink.textContent = 'Descargar';
-                            downloadButtonContainer.appendChild(downloadLink);
+                                if (jobResult && jobResult.status === 'finished' && jobResult.result) {
+                                    console.log("Found download-buttons div for job_id:", job_id);
 
-                            downloadButtonContainer.style.display = 'inline-block';
+                                    const outputFilename = jobResult.result;
+                                    const token = localStorage.getItem('jwtToken');
 
-                            processedFiles[fileKey] = {
-                                ...uploadedFiles[fileKey],
-                                status: 'processed',
-                                jobId: job_id,
-                                quality: parseInt(document.getElementById(`quality-${fileKey}`).value),
-                                resolution: parseInt(document.getElementById(`resolution-${fileKey}`).value),
-                                output_format: document.getElementById(`output_format-${fileKey}`).value
-                            };
+                                    // Create View link
+                                    const viewLink = document.createElement('a');
+                                    viewLink.href = `/file/${job_id}?token=${encodeURIComponent(token)}`;
+                                    viewLink.target = "_blank";
+                                    viewLink.textContent = `View (${job_id.substring(0, 8)}...)`; // Show part of job_id for distinction
+                                    downloadButtonContainer.appendChild(viewLink);
+
+                                    // Create Download link
+                                    const downloadLink = document.createElement('a');
+                                    downloadLink.href = `/download/${job_id}?token=${encodeURIComponent(token)}`;
+                                    downloadLink.download = outputFilename;
+                                    downloadLink.textContent = `Download (${job_id.substring(0, 8)}...)`; // Show part of job_id for distinction
+                                    downloadButtonContainer.appendChild(downloadLink);
+
+                                    downloadButtonContainer.style.display = 'inline-block';
+
+                                    // Ensure processedFiles[fileKey] is an array before pushing
+                                    if (!Array.isArray(processedFiles[fileKey])) {
+                                        processedFiles[fileKey] = [];
+                                    }
+
+                                    // Update processedFiles
+                                    processedFiles[fileKey].push({
+                                        status: 'processed',
+                                        jobId: job_id,
+                                        quality: parseInt(document.getElementById(`quality-${fileKey}`).value),
+                                        resolution: parseInt(document.getElementById(`resolution-${fileKey}`).value),
+                                        output_format: document.getElementById(`output_format-${fileKey}`).value
+                                    });
+                                } else if (jobResult && jobResult.status === 'failed') {
+                                    // Handle failed jobs
+                                    progressText.textContent = `Error al procesar la imagen (Job ID: ${job_id.substring(0,8)}...): ${jobResult.error || 'Error Desconocido'}`;
+                                    const listItem = document.getElementById(`file-item-${fileKey}`);
+                                    if (listItem) {
+                                        listItem.style.backgroundColor = 'lightcoral';
+                                    }
+
+                                    // Ensure processedFiles[fileKey] is an array before pushing
+                                    if (!Array.isArray(processedFiles[fileKey])) {
+                                        processedFiles[fileKey] = [];
+                                    }
+
+                                    processedFiles[fileKey].push({
+                                        status: 'failed',
+                                        jobId: job_id,
+                                        quality: parseInt(document.getElementById(`quality-${fileKey}`).value),
+                                        resolution: parseInt(document.getElementById(`resolution-${fileKey}`).value),
+                                        output_format: document.getElementById(`output_format-${fileKey}`).value
+                                    });
+                                }
+                            }
                         } else {
-                            console.error("Could not find download-buttons div for job_id:", job_id, "and fileKey:", fileKey);
+                            console.error("Could not find download-buttons div for fileKey:", fileKey);
                         }
-                    } else if (jobResult.status === 'failed') {
-                        progressText.textContent = `Error al procesar la imagen: ${jobResult.error || 'Error Desconocido'}`;
-                        const listItem = document.getElementById(`file-item-${fileKey}`);
-                        if (listItem) {
-                            listItem.style.backgroundColor = 'lightcoral';
-                        }
-
-                        processedFiles[fileKey] = {
-                            ...uploadedFiles[fileKey],
-                            status: 'failed',
-                            jobId: job_id,
-                            quality: parseInt(document.getElementById(`quality-${fileKey}`).value),
-                            resolution: parseInt(document.getElementById(`resolution-${fileKey}`).value),
-                            output_format: document.getElementById(`output_format-${fileKey}`).value
-                        };
                     }
                 }
 
@@ -567,7 +592,7 @@
             progressText.textContent = ''; // Clear the text
             progressBar.style.width = '0%'; // Reset progress bar
             globalRequestId = null; // Reset global request ID
-            jobFileMap = {}; // Reset jobFileMap
+            jobFileMap = {}; // Reset jobFileMap - IMPORTANT to clear the array
         }
 
         window.onload = function() {
