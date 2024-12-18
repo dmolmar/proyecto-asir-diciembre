@@ -91,7 +91,7 @@ trace.set_tracer_provider(trace_provider)
 tracer = trace.get_tracer(__name__)
 
 # Metrics Provider
-metric_exporter = OTLPMetricExporter(endpoint="opentelemetry-collector-service:4318", insecure=True)
+metric_exporter = OTLPMetricExporter(endpoint="opentelemetry-collector-service:4318")
 metric_reader = PeriodicExportingMetricReader(metric_exporter)
 meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
 metrics.set_meter_provider(meter_provider)

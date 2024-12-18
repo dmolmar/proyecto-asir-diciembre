@@ -16,4 +16,4 @@ spec:
       targetPort: otlp-http
     - name: otel-prom # Prometheus metrics
       port: 8889
-      targetPort: otel-prom
+      targetPort: 8889

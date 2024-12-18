@@ -4,10 +4,30 @@ metadata:
   name: grafana-config
 data:
   grafana.ini: |
-    [dashboards]
-      enabled = true
-      label = grafana_dashboard
-      label_value = '1'
     [paths]
-      provisioning = /etc/grafana/provisioning
-      dashboards = /var/lib/grafana/dashboards
+      provisioning: /etc/grafana/provisioning
+    [dashboards]
+      enabled: true
+      label: grafana_dashboard
+      label_value: '1'
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+    - name: Prometheus
+      type: prometheus
+      url: http://prometheus-service:9090
+      access: proxy
+      isDefault: true
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+    - name: 'default'
+      orgId: 1
+      folder: ''
+      type: file
+      disableDeletion: false
+      editable: true
+      allowUiUpdates: true # Add this line
+      options:
+        path: /var/lib/grafana/dashboards
+        foldersFromFilesStructure: true # Add this line

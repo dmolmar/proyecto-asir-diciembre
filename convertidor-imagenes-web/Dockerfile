@@ -8,7 +8,7 @@ RUN pip install -r requirements.txt
 COPY app /app
 
 # Install curl for health checks (if needed) and lsof for cleanup
-RUN apt-get update && apt-get install -y --no-install-recommends curl lsof && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends curl lsof telnet && rm -rf /var/lib/apt/lists/*
 
 EXPOSE 5000
 

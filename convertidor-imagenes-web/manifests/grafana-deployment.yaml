@@ -17,6 +17,11 @@ spec:
         image: grafana/grafana:latest
         ports:
         - containerPort: 3000
+        env:
+          - name: GF_SERVER_ROOT_URL
+            value: "%(protocol)s://%(domain)s:%(http_port)s/grafana/"
+          - name: GF_PATHS_PROVISIONING
+            value: /etc/grafana/provisioning
         volumeMounts:
         - name: grafana-storage
           mountPath: /var/lib/grafana
@@ -25,7 +30,7 @@ spec:
         - name: grafana-dashboards
           mountPath: /etc/grafana/provisioning/dashboards
         - name: dashboards-json
-          mountPath: /var/lib/grafana/dashboards/default
+          mountPath: /var/lib/grafana/dashboards # Mount directly to the dashboards directory
         - name: grafana-config-volume
           mountPath: /etc/grafana/grafana.ini
           subPath: grafana.ini
@@ -34,10 +39,10 @@ spec:
         emptyDir: {}
       - name: grafana-datasources
         configMap:
-          name: grafana-datasource
-      - name: grafana-dashboards # Corrected name here
+          name: grafana-config
+      - name: grafana-dashboards
         configMap:
-          name: grafana-dashboards # Corrected name here
+          name: grafana-config
       - name: dashboards-json
         configMap:
           name: grafana-dashboards
