@@ -23,6 +23,7 @@ from urllib.parse import unquote
 from concurrent.futures import ThreadPoolExecutor
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
+import sqlite3
 
 from opentelemetry import trace, metrics
 from opentelemetry.sdk.trace import TracerProvider
@@ -64,6 +65,13 @@ CLEANUP_INTERVAL = 60  # 1 Minute
 SECRET_KEY = os.getenv('SECRET_KEY', 'Arcueid')
 RESERVED_RAM_MB = 256
 
+# Database setup
+DATABASE_FILE = '/data/sqlite/images.db'  # SQLite database file path
+DATABASE_URL = f'sqlite:///{DATABASE_FILE}'
+
+# Global database connection
+db_conn = None
+
 # Redis setup (updated for Kubernetes service)
 redis_conn = redis.Redis(host='redis-service', port=6379)  # Use the service name
 q = Queue(connection=redis_conn, default_timeout=360)
@@ -99,6 +107,32 @@ request_counter = meter.create_counter(
     "requests_total",
     description="Total number of requests"
 )
+
+def get_db_connection():
+    global db_conn
+    if db_conn is None:
+        try:
+            db_conn = sqlite3.connect(DATABASE_FILE, check_same_thread=False) # Allow connection use across threads
+            db_conn.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password TEXT NOT NULL
+                )
+            """)
+            db_conn.commit()
+            app.logger.info("Database connection established.")
+        except Exception as e:
+            app.logger.error(f"Database connection failed: {e}")
+            raise e
+    return db_conn
+
+def close_db_connection(signal, frame):
+    global db_conn
+    if db_conn:
+        db_conn.close()
+        app.logger.info("Database connection closed.")
+    sys.exit(0)
 
 def check_resource_availability():
     """Checks if adding another worker would exceed resource limits."""
@@ -190,6 +224,8 @@ def convert():
             return jsonify({'error': 'No se han subido archivos.'}), 400
 
         files = request.files.getlist('files')
+        file_keys = request.form.getlist('file_keys[]')
+
         if not files:
             return jsonify({'error': 'No se han subido archivos.'}), 400
 
@@ -205,8 +241,9 @@ def convert():
         except ResourceLimitExceeded as e:
              return jsonify({'error': str(e)}), 503
 
-        for file in files:
-            file_key = request.form.get('file_key')
+        # Pair each file with its metadata using the order from file_keys
+        for i, file in enumerate(files):
+            file_key = file_keys[i] if i < len(file_keys) else file.filename
             quality = int(request.form.get(f'quality-{file_key}', 95))
             resolution_percentage = float(request.form.get(f'resolution-{file_key}', 100)) / 100
             output_format = request.form.get(f'output_format-{file_key}', 'original').upper()
@@ -385,22 +422,60 @@ def handle_unexpected_error(error):
     app.logger.error(f"An unexpected error occurred: {error}")
     return jsonify({'error': 'An unexpected error occurred on the server.'}), 500
 
+@app.route('/register', methods=['POST'])
+def register():
+    app.logger.info("Register endpoint called")
+    username = request.json.get('username')
+    password = request.json.get('password')
+    app.logger.info(f"Received credentials: {username}, {password}")
+
+    if not username or not password:
+        return jsonify({'error': 'Username and password are required'}), 400
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor() # Create a cursor object
+        cur.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password))
+        conn.commit()
+        cur.close() # Close the cursor
+        return jsonify({'message': 'User registered successfully'}), 201
+    except sqlite3.IntegrityError:
+        return jsonify({'error': 'Username already exists'}), 409
+    except Exception as e:
+        app.logger.error(f"Error during registration: {e}")
+        return jsonify({'error': 'An error occurred during registration'}), 500
+
 @app.route('/auth', methods=['POST'])
 def authenticate():
     app.logger.info("Auth endpoint called")
     username = request.json.get('username')
     password = request.json.get('password')
     app.logger.info(f"Received credentials: {username}, {password}")
-    if username == 'user' and password == 'pass':
-        payload = {
-            'sub': username,
-            'iat': datetime.utcnow(),
-            'exp': datetime.utcnow() + timedelta(hours=1)
-        }
-        token = jwt.encode(payload, SECRET_KEY, algorithm='HS256')
-        return jsonify({'token': token})
-    else:
-        return jsonify({'error': 'Invalid credentials'}), 401
+
+    if not username or not password:
+        return jsonify({'error': 'Username and password are required'}), 400
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor() # Create a cursor object
+        cur.execute("SELECT password FROM users WHERE username = ?", (username,))
+        result = cur.fetchone()
+
+        if result and result[0] == password:
+            payload = {
+                'sub': username,
+                'iat': datetime.utcnow(),
+                'exp': datetime.utcnow() + timedelta(hours=1)
+            }
+            token = jwt.encode(payload, SECRET_KEY, algorithm='HS256')
+            cur.close() # Close the cursor
+            return jsonify({'token': token})
+        else:
+            cur.close() # Close the cursor
+            return jsonify({'error': 'Invalid credentials'}), 401
+    except Exception as e:
+        app.logger.error(f"Error during authentication: {e}")
+        return jsonify({'error': 'An error occurred during authentication'}), 500
 
 @app.route('/logout')
 def logout():
@@ -412,8 +487,13 @@ def logout():
 def health_check():
     return jsonify({'status': 'ok'}), 200
 
+# Signal handler for graceful shutdown
+signal.signal(signal.SIGINT, close_db_connection)
+signal.signal(signal.SIGTERM, close_db_connection)
+
 if __name__ == '__main__':
     try:
+        conn = get_db_connection() # Create connection at startup
         app.run(debug=True, host='0.0.0.0', port=5000)
     except Exception as e:
         app.logger.error(f"Failed to start server: {e}")

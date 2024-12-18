@@ -20,7 +20,14 @@ spec:
           args:
             - |
               rm -vrf /data/uploads/*
-              rm -vrf /data/temp-uploads/*  # Use temp-uploads (no underscore)
+              rm -vrf /data/temp-uploads/*
+        - name: volume-permissions
+          image: busybox:latest
+          command: ["/bin/chmod", "-R", "777", "/data"]
+          volumeMounts:
+            - name: sqlite-volume
+              mountPath: /data/sqlite
+        
       containers:
         - name: images-api-container
           image: dmolmar/images-api:latest
@@ -35,22 +42,29 @@ spec:
                   key: secret-key
             - name: REDIS_URL
               value: "redis://redis-service:6379"
+            - name: DATABASE_URL
+              value: "sqlite:////data/sqlite/images.db"
           resources:
             requests:
-              cpu: "100m"   # Lowered request to 100m (adjust as needed)
-              memory: "256Mi" # Adjust as needed
+              cpu: "100m"
+              memory: "256Mi"
             limits:
-              cpu: "1000m"  # Increased limit to 3000m (3 cores)
-              memory: "1Gi" # Adjust as needed
+              cpu: "1000m"
+              memory: "1Gi"
           volumeMounts:
             - name: uploads
               mountPath: /data/uploads
             - name: temp-uploads
-              mountPath: /data/temp-uploads  # Use temp-uploads (no underscore)
+              mountPath: /data/temp-uploads
+            - name: sqlite-volume
+              mountPath: /data/sqlite
       volumes:
         - name: uploads
           persistentVolumeClaim:
             claimName: uploads-pvc
         - name: temp-uploads
           persistentVolumeClaim:
-            claimName: temp-uploads-pvc  # Use temp-uploads (no underscore)
+            claimName: temp-uploads-pvc
+        - name: sqlite-volume
+          persistentVolumeClaim:
+             claimName: sqlite-pvc

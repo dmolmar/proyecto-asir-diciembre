@@ -22,6 +22,11 @@
                 Una vez que hayas subido tus imágenes, haz clic en "Convertir" para iniciar el proceso.
             </p>
             <p class="error"></p>
+            <form id="registerForm" class="login-form">
+                <input type="text" id="registerUsername" placeholder="Username" required>
+                <input type="password" id="registerPassword" placeholder="Password" required>
+                <button type="submit">Register</button>
+            </form>
             <form id="loginForm" class="login-form">
                 <input type="text" id="username" placeholder="Username" required>
                 <input type="password" id="password" placeholder="Password" required>
@@ -96,6 +101,7 @@
         let completedImages = 0; // Number of completed images, not jobs
         let isProcessing = false;
         let processedFiles = {};
+        const registerForm = document.getElementById('registerForm');
         const loginForm = document.getElementById('loginForm');
         const logoutButton = document.getElementById('logoutButton');
         let totalImagesToProcess = 0; // Total number of images to be processed
@@ -111,11 +117,13 @@
         // Function to show/hide elements based on login status
         function updateUI() {
             if (isLoggedIn()) {
+                registerForm.style.display = 'none';
                 loginForm.style.display = 'none';
                 logoutButton.style.display = 'block';
                 convertButton.style.display = 'block'; // Show convert button
                 dropArea.classList.remove('disabled'); // Enable drop area
             } else {
+                registerForm.style.display = 'block';
                 loginForm.style.display = 'block';
                 logoutButton.style.display = 'none';
                 convertButton.style.display = 'none'; // Hide convert button
@@ -210,21 +218,21 @@
                             <p><strong>Resolución:</strong> ${fileResolution}</p>
                             <div class="file-settings">
                                 <label for="quality-${key}">Calidad:</label>
-                                <input type="range" id="quality-${key}" name="quality-${key}" min="1" max="100" value="${processedFiles[key] ? processedFiles[key].quality : qualityInput.value}">
-                                <span id="qualityValue-${key}">${processedFiles[key] ? processedFiles[key].quality : qualityInput.value}</span>
+                                <input type="range" id="quality-${key}" name="quality-${key}" min="1" max="100" value="${qualityInput.value}">
+                                <span id="qualityValue-${key}">${qualityInput.value}</span>
                                 <label for="resolution-${key}">Resolución:</label>
-                                <input type="range" id="resolution-${key}" name="resolution-${key}" min="1" max="100" value="${processedFiles[key] ? processedFiles[key].resolution : resolutionInput.value}">
-                                <span id="resolutionValue-${key}">${processedFiles[key] ? processedFiles[key].resolution : resolutionInput.value}</span>
+                                <input type="range" id="resolution-${key}" name="resolution-${key}" min="1" max="100" value="${resolutionInput.value}">
+                                <span id="resolutionValue-${key}">${resolutionInput.value}</span>
                                 <label for="output_format-${key}">Formato de Salida:</label>
                                 <select name="output_format-${key}" id="output_format-${key}">
-                                    <option value="original" ${processedFiles[key] && processedFiles[key].output_format === 'original' ? 'selected' : (defaultOutputFormat === 'original' ? 'selected' : '')}>Original</option>
-                                    <option value="png" ${processedFiles[key] && processedFiles[key].output_format === 'png' ? 'selected' : (defaultOutputFormat === 'png' ? 'selected' : '')}>PNG</option>
-                                    <option value="jpg" ${processedFiles[key] && processedFiles[key].output_format === 'jpg' ? 'selected' : (defaultOutputFormat === 'jpg' ? 'selected' : '')}>JPG</option>
-                                    <option value="webp" ${processedFiles[key] && processedFiles[key].output_format === 'webp' ? 'selected' : (defaultOutputFormat === 'webp' ? 'selected' : '')}>WebP</option>
-                                    <option value="avif" ${processedFiles[key] && processedFiles[key].output_format === 'avif' ? 'selected' : (defaultOutputFormat === 'avif' ? 'selected' : '')}>AVIF</option>
-                                    <option value="bmp" ${processedFiles[key] && processedFiles[key].output_format === 'bmp' ? 'selected' : (defaultOutputFormat === 'bmp' ? 'selected' : '')}>BMP</option>
-                                    <option value="tiff" ${processedFiles[key] && processedFiles[key].output_format === 'tiff' ? 'selected' : (defaultOutputFormat === 'tiff' ? 'selected' : '')}>TIFF</option>
-                                    <option value="ico" ${processedFiles[key] && processedFiles[key].output_format === 'ico' ? 'selected' : (defaultOutputFormat === 'ico' ? 'selected' : '')}>ICO</option>
+                                    <option value="original" ${defaultOutputFormat === 'original' ? 'selected' : ''}>Original</option>
+                                    <option value="png" ${defaultOutputFormat === 'png' ? 'selected' : ''}>PNG</option>
+                                    <option value="jpg" ${defaultOutputFormat === 'jpg' ? 'selected' : ''}>JPG</option>
+                                    <option value="webp" ${defaultOutputFormat === 'webp' ? 'selected' : ''}>WebP</option>
+                                    <option value="avif" ${defaultOutputFormat === 'avif' ? 'selected' : ''}>AVIF</option>
+                                    <option value="bmp" ${defaultOutputFormat === 'bmp' ? 'selected' : ''}>BMP</option>
+                                    <option value="tiff" ${defaultOutputFormat === 'tiff' ? 'selected' : ''}>TIFF</option>
+                                    <option value="ico" ${defaultOutputFormat === 'ico' ? 'selected' : ''}>ICO</option>
                                 </select>
                             </div>
                         <button type="button" class="remove-file" data-key="${key}">X</button>
@@ -276,8 +284,6 @@
                 alert('Please log in to upload files.');
                 return;
             }
-            uploadedFiles = {};
-            processedFiles = {};
             for (let i = 0; i < files.length; i++) {
                 if (files[i].size > (10 * 1024 * 1024)) {
                     alert('El archivo ' + files[i].name + ' excede el tamaño máximo de 10 MB.');
@@ -293,17 +299,21 @@
         }
 
         function uploadFiles() {
+            console.log("uploadFiles called");
             if (!isLoggedIn()) {
+                console.log("User not logged in");
                 alert('Please log in to convert images.');
                 return;
             }
             if (isProcessing) {
+                console.log("Already processing");
                 return;
             }
 
             const filesToUpload = [];
             const filesData = [];
 
+            // Reprocess all images
             for (const key in uploadedFiles) {
                 if (uploadedFiles.hasOwnProperty(key)) {
                     const file = uploadedFiles[key];
@@ -311,24 +321,19 @@
                     const currentResolution = parseInt(document.getElementById(`resolution-${key}`).value);
                     const currentOutputFormat = document.getElementById(`output_format-${key}`).value;
 
-                    if (!processedFiles[key] ||
-                        processedFiles[key].status === 'failed' ||
-                        processedFiles[key].quality !== currentQuality ||
-                        processedFiles[key].resolution !== currentResolution ||
-                        processedFiles[key].output_format !== currentOutputFormat) {
-                        filesToUpload.push(file);
-                        filesData.push({
-                            key: key,
-                            quality: currentQuality,
-                            resolution: currentResolution,
-                            output_format: currentOutputFormat
-                        });
-                    }
+                    filesToUpload.push(file);
+                    filesData.push({
+                        key: key,
+                        quality: currentQuality,
+                        resolution: currentResolution,
+                        output_format: currentOutputFormat
+                    });
                 }
             }
 
             if (filesToUpload.length === 0) {
-                alert('No hay imágenes nuevas o modificadas para procesar.');
+                console.log("No images to upload");
+                alert('No hay imágenes para procesar.');
                 return;
             }
 
@@ -338,10 +343,11 @@
             const formData = new FormData();
 
             totalImagesToProcess = filesToUpload.length; // Set the total number of images
+            console.log(`Total images to process: ${totalImagesToProcess}`);
 
             filesToUpload.forEach((file, index) => {
                 formData.append('files', file);
-                formData.append('file_key', filesData[index].key);
+                formData.append('file_keys[]', filesData[index].key); // Use an array to store all file keys
                 formData.append('quality-' + filesData[index].key, filesData[index].quality);
                 formData.append('resolution-' + filesData[index].key, filesData[index].resolution);
                 formData.append('output_format-' + filesData[index].key, filesData[index].output_format);
@@ -388,6 +394,7 @@
                     errorElement.classList.remove('show');
                     if (data && data.uploaded_files_info && Array.isArray(data.uploaded_files_info)) {
                         globalRequestId = data.request_id;
+                        console.log(`Request ID: ${globalRequestId}`);
                         progressContainer.style.display = 'block';
                         window.onbeforeunload = function() {
                             return "Hay un proceso de conversión en curso, ¿seguro que quieres salir de la página?";
@@ -410,6 +417,7 @@
                                 jobFileMap[fileKey] = [];
                             }
                             jobFileMap[fileKey].push(job_id);
+                            console.log(`Mapping job_id ${job_id} to fileKey ${fileKey}`);
                         }
 
                         for (const fileInfo of data.uploaded_files_info) {
@@ -494,6 +502,7 @@
             try {
                 const token = localStorage.getItem('jwtToken');
                 if (!token) {
+                    console.log('No JWT token found in local storage');
                     throw new Error('No JWT token found in local storage');
                 }
                 const headers = {
@@ -526,27 +535,38 @@
                 progressText.textContent = `Procesando imágenes... ${progress}%`;
 
                 for (const job_id in data.results) {
+                    console.log(`Processing job_id: ${job_id}`);
                     const jobResult = data.results[job_id];
                     const fileKey = jobResult.filekey;
 
-                    if (!jobResult || !fileKey) continue;
-
-                    const listItem = document.getElementById(`file-item-${fileKey}`);
-                    if (!listItem) continue;
-
-                    // Create a unique download button container for each job_id
-                    let downloadButtonContainer = document.getElementById(`download-buttons-${job_id}`);
-                    if (!downloadButtonContainer) {
-                        downloadButtonContainer = document.createElement('div');
-                        downloadButtonContainer.id = `download-buttons-${job_id}`;
-                        downloadButtonContainer.classList.add('download-buttons');
-                        listItem.appendChild(downloadButtonContainer);
+                    if (!jobResult || !fileKey) {
+                        console.log(`Skipping job_id ${job_id} because jobResult or fileKey is missing.`);
+                        continue;
                     }
 
-                    // Clear existing buttons
-                    downloadButtonContainer.innerHTML = '';
+                    console.log(`fileKey for job_id ${job_id}: ${fileKey}`);
+                    const listItem = document.getElementById(`file-item-${fileKey}`);
+
+                    if (!listItem) {
+                        console.log(`Skipping job_id ${job_id} because listItem not found for fileKey ${fileKey}.`);
+                        continue;
+                    }
+
+                    // Create a unique download button container for each fileKey
+                    let downloadButtonContainer = document.getElementById(`download-buttons-${fileKey}`);
+                    if (!downloadButtonContainer) {
+                        console.log(`Creating download button container for fileKey ${fileKey}`);
+                        downloadButtonContainer = document.createElement('div');
+                        downloadButtonContainer.id = `download-buttons-${fileKey}`; // Use fileKey for ID
+                        downloadButtonContainer.classList.add('download-buttons');
+                        listItem.appendChild(downloadButtonContainer);
+                    } else {
+                        console.log(`Download button container for fileKey ${fileKey} already exists. Clearing it.`);
+                        downloadButtonContainer.innerHTML = ''; // Clear existing buttons
+                    }
 
                     if (jobResult.status === 'finished' && jobResult.result) {
+                        console.log(`Job ${job_id} is finished. Creating buttons.`);
                         const outputFilename = jobResult.result;
                         const originalFilename = jobResult.original_filename;
                         const token = localStorage.getItem('jwtToken');
@@ -555,15 +575,17 @@
                         const viewLink = document.createElement('a');
                         viewLink.href = `/file/${job_id}?token=${encodeURIComponent(token)}`;
                         viewLink.target = "_blank";
-                        viewLink.textContent = `View (${job_id.substring(0, 8)}...)`;
+                        viewLink.textContent = `View`;
                         downloadButtonContainer.appendChild(viewLink);
+                        console.log(`Appended View link for job_id ${job_id} to download-buttons-${fileKey}`);
 
                         // Create Download link
                         const downloadLink = document.createElement('a');
                         downloadLink.href = `/download/${job_id}?token=${encodeURIComponent(token)}`;
                         downloadLink.download = originalFilename;
-                        downloadLink.textContent = `Download (${job_id.substring(0, 8)}...)`;
+                        downloadLink.textContent = `Download`;
                         downloadButtonContainer.appendChild(downloadLink);
+                        console.log(`Appended Download link for job_id ${job_id} to download-buttons-${fileKey}`);
 
                         downloadButtonContainer.style.display = 'inline-block';
 
@@ -585,6 +607,7 @@
                             loader.style.display = 'none';
                         }
                     } else if (jobResult.status === 'failed') {
+                        console.log(`Job ${job_id} failed.`);
                         // Handle failed jobs
                         progressText.textContent = `Error al procesar la imagen (Job ID: ${job_id.substring(0, 8)}...): ${jobResult.error || 'Error Desconocido'}`;
                         listItem.style.backgroundColor = 'lightcoral';
@@ -607,6 +630,7 @@
                             loader.style.display = 'none';
                         }
                     } else if (jobResult.status === 'processing') {
+                        console.log(`Job ${job_id} is still processing.`);
                         // Show the loader for processing images
                         const loader = listItem.querySelector('.loader');
                         if (loader) {
@@ -616,6 +640,7 @@
                 }
 
                 if (data.all_finished) {
+                    console.log("All jobs finished.");
                     progressContainer.style.display = 'none';
                     progressText.textContent = '';
                     resetState();
@@ -648,6 +673,33 @@
             resetState();
         }
 
+        registerForm.addEventListener('submit', function(event) {
+            console.log('Register form submitted');
+            event.preventDefault();
+            const username = document.getElementById('registerUsername').value;
+            const password = document.getElementById('registerPassword').value;
+            fetch('/register', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ username, password })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.message) {
+                    alert('Registration successful');
+                    updateUI(); // Update UI after successful login
+                } else {
+                    alert('Registration failed: ' + data.error);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('An error occurred during registration');
+            });
+        });
+
         loginForm.addEventListener('submit', function(event) {
             console.log('Login form submitted');
             event.preventDefault();
@@ -667,7 +719,7 @@
                     alert('Login successful');
                     updateUI(); // Update UI after successful login
                 } else {
-                    alert('Login failed');
+                    alert('Login failed: ' + data.error);
                 }
             })
             .catch(error => {
