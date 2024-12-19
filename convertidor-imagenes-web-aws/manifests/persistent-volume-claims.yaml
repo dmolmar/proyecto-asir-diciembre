@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sqlite-pvc # Nombre del PVC
+spec:
+  accessModes:
+    - ReadWriteMany # Modo de acceso, muchos nodos pueden leer y escribir
+  storageClassName: local-storage # Clase de almacenamiento
+  resources:
+    requests:
+      storage: 2Gi # Tamaño de almacenamiento solicitado
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: uploads-pvc # Nombre del PVC
+spec:
+  accessModes:
+    - ReadWriteMany # Modo de acceso
+  storageClassName: local-storage # Clase de almacenamiento
+  resources:
+    requests:
+      storage: 5Gi # Tamaño de almacenamiento solicitado
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: temp-uploads-pvc  # Nombre del PVC
+spec:
+  accessModes:
+    - ReadWriteMany # Modo de acceso
+  storageClassName: local-storage # Clase de almacenamiento
+  resources:
+    requests:
+      storage: 1Gi # Tamaño de almacenamiento solicitado

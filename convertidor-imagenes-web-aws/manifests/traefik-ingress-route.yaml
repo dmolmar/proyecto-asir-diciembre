@@ -1,0 +1,26 @@
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: images-api-route
+  namespace: convertidor-imagenes
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: PathPrefix(`/`) # Coincide con rutas que empiecen con /
+      kind: Rule # Tipo de ruta, regla
+      services:
+        - name: images-api-service # Servicio destino
+          port: 5000
+      middlewares: # Middlewares aplicados
+        - name: strip-prefix
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-prefix # Nombre del middleware
+  namespace: convertidor-imagenes
+spec:
+  stripPrefix:
+    prefixes:
+      - / # Elimina el prefijo /

@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Conversor de Imágenes</title>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>Conversor de Imágenes</h1>
+        </div>
+    </header>
+    <main>
+        <div class="container">
+            <p class="intro-text">
+                Bienvenido al conversor de imágenes. Aquí podrás convertir tus imágenes a diferentes formatos de manera rápida y sencilla.
+                Sube tus imágenes arrastrándolas a la zona indicada o haciendo clic en el botón "Seleccionar Imágenes".
+                Puedes ajustar la calidad y resolución de las imágenes antes de convertirlas.
+                Una vez que hayas subido tus imágenes, haz clic en "Convertir" para iniciar el proceso.
+            </p>
+            <p class="error"></p>
+             <!-- Formularios de registro y login -->
+            <form id="registerForm" class="login-form">
+                <input type="text" id="registerUsername" placeholder="Username" required>
+                <input type="password" id="registerPassword" placeholder="Password" required>
+                <button type="submit">Register</button>
+            </form>
+            <form id="loginForm" class="login-form">
+                <input type="text" id="username" placeholder="Username" required>
+                <input type="password" id="password" placeholder="Password" required>
+                <button type="submit">Login</button>
+            </form>
+            <button id="logoutButton" style="display: none;">Logout</button>
+             <!-- Formulario de carga de imágenes -->
+            <form method="post" enctype="multipart/form-data" id="uploadForm">
+                <div class="drop-area" id="drop-area">
+                    <p>Arrastra y suelta las imágenes aquí o haz clic para seleccionar</p>
+                    <input type="file" name="files" multiple accept="image/*" id="fileInput" style="display: none;">
+                </div>
+                <!-- Controles para calidad, resolución y formato de salida -->
+                <div class="controls">
+                    <div class="control-group">
+                        <label for="quality">Calidad predeterminada:</label>
+                        <input type="range" id="quality" name="quality" min="1" max="100" value="95">
+                        <span id="qualityValue">95</span>
+                    </div>
+                    <div class="control-group">
+                        <label for="resolution">Resolución predeterminada:</label>
+                        <input type="range" id="resolution" name="resolution" min="1" max="100" value="100">
+                        <span id="resolutionValue">100</span>
+                    </div>
+                    <div class="control-group">
+                        <label for="output_format">Formato de Salida predeterminado:</label>
+                        <select name="output_format" id="output_format">
+                            <option value="original">Original</option>
+                            <option value="png">PNG</option>
+                            <option value="jpg">JPG</option>
+                            <option value="webp">WebP</option>
+                            <option value="avif">AVIF</option>
+                            <option value="bmp">BMP</option>
+                            <option value="tiff">TIFF</option>
+                            <option value="ico">ICO</option>
+                        </select>
+                    </div>
+                </div>
+                <button type="button" id="convertButton">Convertir</button>
+            </form>
+            <!-- Botón para eliminar todas las imágenes -->
+            <button type="button" id="removeAllButton" class="remove-all-button">Eliminar Todas las Imágenes</button>
+            <!-- Contenedor de la barra de progreso -->
+            <div id="progress-container">
+                <div id="progress-bar"></div>
+                <p id="progress-text">Procesando imágenes...</p>
+            </div>
+            <!-- Contenedor de resultados y archivos seleccionados -->
+            <div id="results-container">
+                <h2>Archivos Seleccionados</h2>
+                <ul id="files-list" class="files-grid">
+                </ul>
+            </div>
+        </div>
+    </main>
+    <footer>
+        <div class="container">
+            <p>© 2023 Conversor de Imágenes</p>
+        </div>
+    </footer>
+    <script>
+        // Obtiene los elementos del DOM
+        const qualityInput = document.getElementById('quality');
+        const qualityValue = document.getElementById('qualityValue');
+        const resolutionInput = document.getElementById('resolution');
+        const resolutionValue = document.getElementById('resolutionValue');
+        const dropArea = document.getElementById('drop-area');
+        const fileInput = document.getElementById('fileInput');
+        const progressBar = document.getElementById('progress-bar');
+        const progressText = document.getElementById('progress-text');
+        const progressContainer = document.getElementById('progress-container');
+        const filesList = document.getElementById('files-list');
+        const uploadForm = document.getElementById('uploadForm');
+        const convertButton = document.getElementById('convertButton');
+        const errorElement = document.querySelector('.error');
+         // Variables para controlar el estado y el progreso
+        let uploadedFiles = {}; // Almacena los archivos subidos
+        let jobIds = [];
+        let completedImages = 0; // Número de imágenes completadas, no trabajos
+        let isProcessing = false; // Indica si hay un proceso en marcha
+        let processedFiles = {}; // Almacena información de los archivos procesados
+        const registerForm = document.getElementById('registerForm'); // Formulario de registro
+        const loginForm = document.getElementById('loginForm'); // Formulario de inicio de sesión
+        const logoutButton = document.getElementById('logoutButton'); // Botón de cierre de sesión
+        let totalImagesToProcess = 0; // Total de imágenes a procesar
+        let globalRequestId = null; // ID de la solicitud global
+        let jobFileMap = {}; // Mapeo de job_id a fileKey
+        let imageCounter = 0; // Contador para IDs de imagen únicas
+         // Función para verificar si el usuario está logueado
+        function isLoggedIn() {
+            return localStorage.getItem('jwtToken') !== null;
+        }
+         // Función para actualizar la interfaz basada en el estado de login
+        function updateUI() {
+            if (isLoggedIn()) {
+                registerForm.style.display = 'none';
+                loginForm.style.display = 'none';
+                logoutButton.style.display = 'block';
+                convertButton.style.display = 'block';
+                dropArea.classList.remove('disabled');
+            } else {
+                registerForm.style.display = 'block';
+                loginForm.style.display = 'block';
+                logoutButton.style.display = 'none';
+                convertButton.style.display = 'none';
+                dropArea.classList.add('disabled');
+            }
+        }
+        // Actualiza la interfaz al cargar la página
+        updateUI();
+         // Eventos para actualizar los valores de calidad y resolución
+        qualityInput.addEventListener('input', function () {
+            qualityValue.textContent = qualityInput.value;
+        });
+
+        resolutionInput.addEventListener('input', function () {
+            resolutionValue.textContent = resolutionInput.value;
+        });
+        // Función para formatear el tamaño de un archivo
+        function formatFileSize(bytes) {
+            if (bytes >= 1024 * 1024) {
+                return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+            } else if (bytes >= 1024) {
+                return (bytes / 1024).toFixed(2) + ' KB';
+            }
+            return bytes + ' bytes';
+        }
+
+        // Función para generar la miniatura de una imagen
+        function generateThumbnail(file, callback) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    const canvas = document.createElement('canvas');
+                    const MAX_WIDTH = 100;
+                    const MAX_HEIGHT = 100;
+                    let width = img.width;
+                    let height = img.height;
+
+                    if (width > height) {
+                        if (width > MAX_WIDTH) {
+                            height *= MAX_WIDTH / width;
+                            width = MAX_WIDTH;
+                        }
+                    } else {
+                        if (height > MAX_HEIGHT) {
+                            width *= MAX_HEIGHT / height;
+                            height = MAX_HEIGHT;
+                        }
+                    }
+
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+
+                    callback(canvas.toDataURL('image/jpeg'), img.width, img.height);
+                }
+                img.src = e.target.result;
+            }
+            reader.readAsDataURL(file);
+        }
+        // Función para generar una clave única para cada archivo
+        function generateFileKey(file) {
+            return `${file.name}-${file.size}-${file.lastModified}`;
+        }
+        // Función para mostrar cada archivo en la interfaz
+        function displayFileItem(file, index) {
+            const key = generateFileKey(file);
+            let listItem = document.getElementById(`file-item-${key}`);
+            const defaultOutputFormat = document.getElementById('output_format').value;
+            // Verifica si el elemento ya existe, si no lo crea
+            if (!listItem) {
+                generateThumbnail(file, function(thumbnail, width, height) {
+                    listItem = document.createElement('li');
+                    listItem.classList.add('file-item');
+                    listItem.id = `file-item-${key}`;
+
+                    const fileNameParts = file.name.split('.');
+                    const fileExtension = fileNameParts.length > 1 ? fileNameParts.pop().toLowerCase() : '';
+                    const fileResolution = `${width}x${height}`;
+                    // Inserta el HTML con los datos del archivo y los controles
+                    listItem.innerHTML = `
+                        <div class="thumbnail-container">
+                            <img src="${thumbnail}" alt="Thumbnail" class="thumbnail">
+                            <div class="loader"></div>
+                        </div>
+                        <div class="file-info">
+                            <p><strong>Nombre:</strong> ${file.name}</p>
+                            <p><strong>Extensión:</strong> ${fileExtension}</p>
+                            <p><strong>Tamaño:</strong> ${formatFileSize(file.size)}</p>
+                            <p><strong>Resolución:</strong> ${fileResolution}</p>
+                            <div class="file-settings">
+                                <label for="quality-${key}">Calidad:</label>
+                                <input type="range" id="quality-${key}" name="quality-${key}" min="1" max="100" value="${qualityInput.value}">
+                                <span id="qualityValue-${key}">${qualityInput.value}</span>
+                                <label for="resolution-${key}">Resolución:</label>
+                                <input type="range" id="resolution-${key}" name="resolution-${key}" min="1" max="100" value="${resolutionInput.value}">
+                                <span id="resolutionValue-${key}">${resolutionInput.value}</span>
+                                <label for="output_format-${key}">Formato de Salida:</label>
+                                <select name="output_format-${key}" id="output_format-${key}">
+                                    <option value="original" ${defaultOutputFormat === 'original' ? 'selected' : ''}>Original</option>
+                                    <option value="png" ${defaultOutputFormat === 'png' ? 'selected' : ''}>PNG</option>
+                                    <option value="jpg" ${defaultOutputFormat === 'jpg' ? 'selected' : ''}>JPG</option>
+                                    <option value="webp" ${defaultOutputFormat === 'webp' ? 'selected' : ''}>WebP</option>
+                                    <option value="avif" ${defaultOutputFormat === 'avif' ? 'selected' : ''}>AVIF</option>
+                                    <option value="bmp" ${defaultOutputFormat === 'bmp' ? 'selected' : ''}>BMP</option>
+                                    <option value="tiff" ${defaultOutputFormat === 'tiff' ? 'selected' : ''}>TIFF</option>
+                                    <option value="ico" ${defaultOutputFormat === 'ico' ? 'selected' : ''}>ICO</option>
+                                </select>
+                            </div>
+                        <button type="button" class="remove-file" data-key="${key}">X</button>
+                    `;
+                    filesList.appendChild(listItem);
+
+                    // Eventos para actualizar los valores de calidad y resolución individuales
+                    document.getElementById(`quality-${key}`).addEventListener('input', function() {
+                        document.getElementById(`qualityValue-${key}`).textContent = this.value;
+                    });
+
+                    document.getElementById(`resolution-${key}`).addEventListener('input', function() {
+                        document.getElementById(`resolutionValue-${key}`).textContent = this.value;
+                    });
+                    // Evento para eliminar cada archivo
+                    const removeButton = listItem.querySelector('.remove-file');
+                    removeButton.addEventListener('click', function() {
+                        const key = this.getAttribute('data-key');
+                        delete uploadedFiles[key];
+                        delete processedFiles[key];
+                        const listItem = document.getElementById(`file-item-${key}`);
+                        if (listItem) {
+                            listItem.remove();
+                        }
+                        fileInput.value = '';
+                    });
+                });
+            } else {
+                // Actualiza la miniatura y la info si el elemento ya existe
+                generateThumbnail(file, function(thumbnail, width, height) {
+                    const thumbnailElement = listItem.querySelector('.thumbnail');
+                    thumbnailElement.src = thumbnail;
+
+                    const nameElement = listItem.querySelector('.file-info p strong:nth-child(1)');
+                    nameElement.textContent = file.name;
+
+                    const extensionElement = listItem.querySelector('.file-info p strong:nth-child(2)');
+                    extensionElement.textContent = file.name.split('.').pop();
+
+                    const sizeElement = listItem.querySelector('.file-info p strong:nth-child(3)');
+                    sizeElement.textContent = formatFileSize(file.size);
+
+                    const resolutionElement = listItem.querySelector('.file-info p strong:nth-child(4)');
+                    resolutionElement.textContent = `${width}x${height}`;
+                });
+            }
+        }
+         // Función para manejar los archivos seleccionados o arrastrados
+        function handleFiles(files) {
+            if (!isLoggedIn()) {
+                alert('Please log in to upload files.');
+                return;
+            }
+            for (let i = 0; i < files.length; i++) {
+                 // Verifica si el archivo excede el tamaño máximo
+                if (files[i].size > (10 * 1024 * 1024)) {
+                    alert('El archivo ' + files[i].name + ' excede el tamaño máximo de 10 MB.');
+                    continue;
+                }
+                const file = files[i];
+                const key = generateFileKey(file);
+                 // Agrega el archivo a la lista solo si no existe previamente
+                if (!uploadedFiles[key]) {
+                    uploadedFiles[key] = file;
+                    displayFileItem(file);
+                }
+            }
+        }
+        // Función para subir los archivos y procesarlos
+        function uploadFiles() {
+            console.log("uploadFiles called");
+            if (!isLoggedIn()) {
+                console.log("User not logged in");
+                alert('Please log in to convert images.');
+                return;
+            }
+            if (isProcessing) {
+                console.log("Already processing");
+                return;
+            }
+             // Obtiene los archivos a subir y sus datos
+            const filesToUpload = [];
+            const filesData = [];
+             // Recorre todos los archivos y obtiene los datos actuales
+            for (const key in uploadedFiles) {
+                if (uploadedFiles.hasOwnProperty(key)) {
+                    const file = uploadedFiles[key];
+                    const currentQuality = parseInt(document.getElementById(`quality-${key}`).value);
+                    const currentResolution = parseInt(document.getElementById(`resolution-${key}`).value);
+                    const currentOutputFormat = document.getElementById(`output_format-${key}`).value;
+                    // Almacena los datos
+                    filesToUpload.push(file);
+                    filesData.push({
+                        key: key,
+                        quality: currentQuality,
+                        resolution: currentResolution,
+                        output_format: currentOutputFormat
+                    });
+                }
+            }
+             // Verifica si hay archivos para procesar
+            if (filesToUpload.length === 0) {
+                console.log("No images to upload");
+                alert('No hay imágenes para procesar.');
+                return;
+            }
+            // Establece el estado de procesamiento
+            isProcessing = true;
+            convertButton.disabled = true;
+            dropArea.classList.add('disabled');
+            const formData = new FormData();
+            // Establece el número total de imágenes
+            totalImagesToProcess = filesToUpload.length;
+            console.log(`Total images to process: ${totalImagesToProcess}`);
+            // Recorre y agrega los archivos y sus datos al formData
+            filesToUpload.forEach((file, index) => {
+                formData.append('files', file);
+                formData.append('file_keys[]', filesData[index].key);
+                formData.append('quality-' + filesData[index].key, filesData[index].quality);
+                formData.append('resolution-' + filesData[index].key, filesData[index].resolution);
+                formData.append('output_format-' + filesData[index].key, filesData[index].output_format);
+            });
+
+            console.log("FormData:", formData); // Debug form data
+            // Obtiene el token y lo añade a las cabeceras
+            const token = localStorage.getItem('jwtToken');
+            const headers = {
+                'Authorization': `Bearer ${token}`
+            };
+            // Envia la petición al endpoint de conversión
+            fetch('/convert', {
+                method: 'POST',
+                headers: headers,
+                body: formData
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(data => {
+                    if (response.status === 401) {
+                    // Verifica si el error es por falta, expiración o invalidez del token
+                    if (data.error === 'missing_token' || data.error === 'expired_token' || data.error === 'invalid_token') {
+                        localStorage.removeItem('jwtToken');
+                        updateUI();
+                        throw new Error('Error: Debes iniciar sesión para convertir imágenes. Tu sesión ha expirado.');
+                    } else {
+                        throw new Error(data.error || 'Network response was not ok');
+                    }
+                    } else {
+                    throw new Error(data.error || 'Network response was not ok');
+                    }
+                });
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log("Respuesta del servidor:", data);
+                if (data.error) {
+                    errorElement.textContent = data.error;
+                    errorElement.classList.add('show');
+                    resetState();
+                } else {
+                    errorElement.classList.remove('show');
+                    if (data && data.uploaded_files_info && Array.isArray(data.uploaded_files_info)) {
+                        globalRequestId = data.request_id;
+                        console.log(`Request ID: ${globalRequestId}`);
+                        progressContainer.style.display = 'block';
+                        // Muestra un mensaje de advertencia si se intenta salir de la página
+                        window.onbeforeunload = function() {
+                            return "Hay un proceso de conversión en curso, ¿seguro que quieres salir de la página?";
+                        };
+                        completedImages = 0;
+                        progressBar.style.width = '0%';
+                        progressText.textContent = 'Procesando imágenes...';
+                         // Reinicia el contador de imágenes
+                        imageCounter = 0;
+                        // Crea el mapeo de job_id a fileKey
+                        jobFileMap = {};
+                        for (let i = 0; i < data.uploaded_files_info.length; i++) {
+                            const fileInfo = data.uploaded_files_info[i];
+                            const fileKey = fileInfo.key;
+                            const job_id = Object.keys(data.results)[i];
+                             // Agrega los IDs de trabajos a un array por cada fileKey
+                            if (!jobFileMap[fileKey]) {
+                                jobFileMap[fileKey] = [];
+                            }
+                            jobFileMap[fileKey].push(job_id);
+                            console.log(`Mapping job_id ${job_id} to fileKey ${fileKey}`);
+                        }
+                         // Inicializa la info de los archivos procesados
+                        for (const fileInfo of data.uploaded_files_info) {
+                            const key = fileInfo.key;
+                            if (uploadedFiles[key]) {
+                                processedFiles[key] = [];
+                                processedFiles[key].push({
+                                    status: 'processing'
+                                });
+                            }
+                        }
+                        checkProgress(globalRequestId);
+                    } else {
+                        console.error('Error: La respuesta del servidor no contiene uploaded_files_info o no es un array.');
+                        resetState();
+                    }
+                }
+            })
+            .catch(error => {
+            console.error('Error:', error);
+            errorElement.textContent = error.message;
+            errorElement.classList.add('show');
+            resetState();
+            });
+        }
+        // Eventos para el manejo de los eventos drag and drop
+        dropArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropArea.classList.add('dragover');
+        });
+
+        dropArea.addEventListener('dragleave', () => {
+            dropArea.classList.remove('dragover');
+        });
+
+        dropArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropArea.classList.remove('dragover');
+            if (!isProcessing) {
+                if (!isLoggedIn()) {
+                    alert('Please log in to upload files.');
+                    return;
+                }
+                const files = e.dataTransfer.files;
+                fileInput.files = files;
+                handleFiles(files);
+            }
+        });
+         // Evento para el click en el dropArea
+        dropArea.addEventListener('click', () => {
+            if (!isProcessing) {
+                if (!isLoggedIn()) {
+                    alert('Please log in to upload files.');
+                    return;
+                }
+                fileInput.click();
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if(!isProcessing){
+                const files = e.target.files;
+                handleFiles(files);
+            }
+        });
+        // Evento para el botón convertir
+        convertButton.addEventListener('click', (e) => {
+           e.preventDefault(); // Previene el envío del formulario
+           uploadFiles();
+        });
+        // Evento para eliminar todos los archivos
+        document.getElementById('removeAllButton').addEventListener('click', function() {
+            uploadedFiles = {};
+            processedFiles = {};
+            filesList.innerHTML = '';
+            fileInput.value = '';
+        });
+        // Función para verificar el progreso de la conversión
+        async function checkProgress(requestId) {
+            console.log(`Checking progress for request ID ${requestId}`);
+            try {
+                const token = localStorage.getItem('jwtToken');
+                if (!token) {
+                    console.log('No JWT token found in local storage');
+                    throw new Error('No JWT token found in local storage');
+                }
+                const headers = {
+                    'Authorization': `Bearer ${token}`
+                };
+                const response = await fetch(`/progress/${requestId}`, { headers: headers });
+
+                if (!response.ok) {
+                    if (response.status === 401) {
+                        localStorage.removeItem('jwtToken');
+                        updateUI();
+                        throw new Error('Error: Debes iniciar sesión para convertir imágenes. Tu sesión ha expirado.');
+                    } else {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                }
+                 // Procesa la respuesta del servidor
+                const data = await response.json();
+                console.log("Progress data:", data);
+
+                if (data.error) {
+                    progressText.textContent = `Error: ${data.error}`;
+                    resetState();
+                    return;
+                }
+                 // Actualiza la barra de progreso
+                completedImages = data.completed;
+                const progress = Math.round((completedImages / totalImagesToProcess) * 100);
+                progressBar.style.width = `${progress}%`;
+                progressText.textContent = `Procesando imágenes... ${progress}%`;
+                 // Recorre los resultados de cada trabajo
+                for (const job_id in data.results) {
+                    console.log(`Processing job_id: ${job_id}`);
+                    const jobResult = data.results[job_id];
+                    const fileKey = jobResult.filekey;
+
+                    if (!jobResult || !fileKey) {
+                        console.log(`Skipping job_id ${job_id} because jobResult or fileKey is missing.`);
+                        continue;
+                    }
+
+                    console.log(`fileKey for job_id ${job_id}: ${fileKey}`);
+                    const listItem = document.getElementById(`file-item-${fileKey}`);
+
+                    if (!listItem) {
+                        console.log(`Skipping job_id ${job_id} because listItem not found for fileKey ${fileKey}.`);
+                        continue;
+                    }
+                    // Crea el contenedor de los botones de descarga si no existe
+                    let downloadButtonContainer = document.getElementById(`download-buttons-${fileKey}`);
+                    if (!downloadButtonContainer) {
+                        console.log(`Creating download button container for fileKey ${fileKey}`);
+                        downloadButtonContainer = document.createElement('div');
+                        downloadButtonContainer.id = `download-buttons-${fileKey}`;
+                        downloadButtonContainer.classList.add('download-buttons');
+                        listItem.appendChild(downloadButtonContainer);
+                    } else {
+                        console.log(`Download button container for fileKey ${fileKey} already exists. Clearing it.`);
+                        downloadButtonContainer.innerHTML = '';
+                    }
+
+                    if (jobResult.status === 'finished' && jobResult.result) {
+                        console.log(`Job ${job_id} is finished. Creating buttons.`);
+                        const outputFilename = jobResult.result;
+                        const originalFilename = jobResult.original_filename;
+                        const token = localStorage.getItem('jwtToken');
+                        // Crea el link para ver la imagen
+                        const viewLink = document.createElement('a');
+                        viewLink.href = `/file/${job_id}?token=${encodeURIComponent(token)}`;
+                        viewLink.target = "_blank";
+                        viewLink.textContent = `View`;
+                        downloadButtonContainer.appendChild(viewLink);
+                        console.log(`Appended View link for job_id ${job_id} to download-buttons-${fileKey}`);
+                        // Crea el link para descargar la imagen
+                        const downloadLink = document.createElement('a');
+                        downloadLink.href = `/download/${job_id}?token=${encodeURIComponent(token)}`;
+                        downloadLink.download = originalFilename;
+                        downloadLink.textContent = `Download`;
+                        downloadButtonContainer.appendChild(downloadLink);
+                        console.log(`Appended Download link for job_id ${job_id} to download-buttons-${fileKey}`);
+
+                        downloadButtonContainer.style.display = 'inline-block';
+                        // Actualiza el array de archivos procesados
+                        if (!processedFiles[fileKey]) {
+                            processedFiles[fileKey] = [];
+                        }
+                        processedFiles[fileKey].push({
+                            status: 'processed',
+                            jobId: job_id,
+                            quality: parseInt(document.getElementById(`quality-${fileKey}`).value),
+                            resolution: parseInt(document.getElementById(`resolution-${fileKey}`).value),
+                            output_format: document.getElementById(`output_format-${fileKey}`).value
+                        });
+                        // Oculta el loader
+                        const loader = listItem.querySelector('.loader');
+                        if (loader) {
+                            loader.style.display = 'none';
+                        }
+                    } else if (jobResult.status === 'failed') {
+                        console.log(`Job ${job_id} failed.`);
+                        progressText.textContent = `Error al procesar la imagen (Job ID: ${job_id.substring(0, 8)}...): ${jobResult.error || 'Error Desconocido'}`;
+                        listItem.style.backgroundColor = 'lightcoral';
+
+                        // Actualiza processedFiles
+                        if (!processedFiles[fileKey]) {
+                            processedFiles[fileKey] = [];
+                        }
+                        processedFiles[fileKey].push({
+                            status: 'failed',
+                            jobId: job_id,
+                            quality: parseInt(document.getElementById(`quality-${fileKey}`).value),
+                            resolution: parseInt(document.getElementById(`resolution-${fileKey}`).value),
+                            output_format: document.getElementById(`output_format-${fileKey}`).value
+                        });
+                        // Oculta el loader
+                        const loader = listItem.querySelector('.loader');
+                        if (loader) {
+                            loader.style.display = 'none';
+                        }
+                    } else if (jobResult.status === 'processing') {
+                        console.log(`Job ${job_id} is still processing.`);
+                        // Muestra el loader mientras se procesa la imagen
+                        const loader = listItem.querySelector('.loader');
+                        if (loader) {
+                            loader.style.display = 'block';
+                        }
+                    }
+                }
+                // Si todos los trabajos terminaron, restablece el estado
+                if (data.all_finished) {
+                    console.log("All jobs finished.");
+                    progressContainer.style.display = 'none';
+                    progressText.textContent = '';
+                    resetState();
+                } else {
+                     // Si no, sigue verificando el progreso
+                    setTimeout(() => checkProgress(requestId), 1000);
+                }
+            } catch (error) {
+                console.error('Error al verificar el progreso:', error);
+                progressText.textContent = error.message;
+                resetState();
+            }
+        }
+        // Función para resetear el estado de la aplicación
+        function resetState() {
+            isProcessing = false;
+            convertButton.disabled = false;
+            dropArea.classList.remove('disabled');
+            window.onbeforeunload = null;
+            jobIds = [];
+            completedImages = 0;
+            totalImagesToProcess = 0;
+            progressContainer.style.display = 'none';
+            progressText.textContent = '';
+            progressBar.style.width = '0%';
+            globalRequestId = null;
+            jobFileMap = {}; // Limpia el array de jobFileMap
+        }
+        // Resetea el estado al cargar la página
+        window.onload = function() {
+            resetState();
+        }
+        // Evento para el formulario de registro
+        registerForm.addEventListener('submit', function(event) {
+            console.log('Register form submitted');
+            event.preventDefault();
+            const username = document.getElementById('registerUsername').value;
+            const password = document.getElementById('registerPassword').value;
+            fetch('/register', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ username, password })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.message) {
+                    alert('Registration successful');
+                    updateUI();
+                } else {
+                    alert('Registration failed: ' + data.error);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('An error occurred during registration');
+            });
+        });
+        // Evento para el formulario de login
+        loginForm.addEventListener('submit', function(event) {
+            console.log('Login form submitted');
+            event.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            fetch('/auth', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ username, password })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.token) {
+                    localStorage.setItem('jwtToken', data.token);
+                    alert('Login successful');
+                    updateUI();
+                } else {
+                    alert('Login failed: ' + data.error);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('An error occurred during login');
+            });
+        });
+        // Evento para el botón de logout
+        logoutButton.addEventListener('click', function() {
+            localStorage.removeItem('jwtToken');
+            updateUI();
+        });
+    </script>
+</body>
+</html>

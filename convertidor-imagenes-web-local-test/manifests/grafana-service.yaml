@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana-service # Nombre del servicio
+spec:
+  selector:
+    app: grafana # Selector para los pods de grafana
+  ports:
+    - protocol: TCP
+      port: 3000 # Puerto del servicio
+      targetPort: 3000 # Puerto del contenedor
+  type: LoadBalancer # Tipo de servicio, LoadBalancer o NodePort

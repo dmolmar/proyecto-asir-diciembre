@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus-deployment # Nombre del deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+      - name: prometheus
+        image: prom/prometheus:latest # Imagen de prometheus
+        args:
+          - "--config.file=/etc/prometheus/prometheus.yml" # Ruta del archivo de configuración
+          - "--storage.tsdb.path=/prometheus" # Ruta de almacenamiento para la base de datos de tiempo
+        ports:
+        - containerPort: 9090 # Puerto del contenedor
+        volumeMounts:
+        - name: prometheus-config # Monta el ConfigMap en /etc/prometheus/
+          mountPath: /etc/prometheus/
+        - name: prometheus-storage # Monta el directorio de almacenamiento en /prometheus/
+          mountPath: /prometheus/
+      volumes:
+      - name: prometheus-config # Volumen con la configuración
+        configMap:
+          name: prometheus-config
+      - name: prometheus-storage # Volumen para el almacenamiento de datos de Prometheus
+        emptyDir: {} # Usa un directorio vacío (para almacenamiento no persistente)
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config # Nombre del configMap
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s # Intervalo de recolección de métricas
+
+    scrape_configs:
+      - job_name: 'otel-collector' # Nombre del job
+        static_configs:
+          - targets: ['opentelemetry-collector-service:8889'] # Punto de recolección de métricas

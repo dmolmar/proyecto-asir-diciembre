@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-service # Nombre del servicio
+spec:
+  selector:
+    app: prometheus # Selector para los pods del servicio
+  ports:
+  - port: 9090 # Puerto del servicio
+    targetPort: 9090 # Puerto del contenedor

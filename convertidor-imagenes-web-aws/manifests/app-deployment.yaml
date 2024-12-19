@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: images-api-deployment
+  namespace: convertidor-imagenes
+spec:
+  replicas: 1 # Número de réplicas del pod
+  selector:
+    matchLabels:
+      app: images-api # Selector de pods para el deployment
+  template:
+    metadata:
+      labels:
+        app: images-api # Etiqueta para los pods
+    spec:
+       # Init containers, contenedores que se ejecutan antes que los contenedores de la app
+      initContainers:
+        - name: clear-stale-sockets
+          image: busybox:latest # Utiliza una imagen de busybox para tareas pequeñas
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              # Elimina los archivos de las carpetas de uploads y temporales
+              rm -vrf /data/uploads/*
+              rm -vrf /data/temp-uploads/*
+        - name: volume-permissions
+          image: busybox:latest
+          command: ["/bin/chmod", "-R", "777", "/data"] # Da permisos completos a la carpeta data (sqlite)
+          volumeMounts:
+            - name: sqlite-volume
+              mountPath: /data/sqlite
+      containers:
+        - name: images-api-container
+          image: dmolmar/images-api:latest # Imagen del contenedor de la aplicación
+          imagePullPolicy: Always # Siempre intenta obtener la última imagen
+          ports:
+            - containerPort: 5000 # Puerto expuesto del contenedor
+          env:
+            - name: SECRET_KEY # Clave secreta para JWT
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets # Toma el valor desde el secret app-secrets
+                  key: secret-key # La clave secret-key
+            - name: REDIS_URL # URL de conexión a Redis
+              value: "redis://redis-service:6379" # utiliza el nombre del servicio redis
+            - name: DATABASE_URL # URL de la base de datos
+              value: "sqlite:////data/sqlite/images.db" # ruta dentro del contenedor
+          resources: # Configuración de recursos
+            requests:
+              cpu: "100m" # Solicitud de CPU mínima
+              memory: "256Mi" # Solicitud de memoria mínima
+            limits:
+              cpu: "1000m" # Límite máximo de CPU
+              memory: "1Gi" # Límite máximo de memoria
+          volumeMounts: # Monta volúmenes dentro del contenedor
+            - name: uploads
+              mountPath: /data/uploads # Monta el PVC uploads en /data/uploads
+            - name: temp-uploads
+              mountPath: /data/temp-uploads # Monta el PVC temp-uploads en /data/temp-uploads
+            - name: sqlite-volume
+              mountPath: /data/sqlite # Monta el PVC sqlite-volume en /data/sqlite
+      volumes: # Definición de volúmenes
+        - name: uploads # Volumen para los archivos subidos
+          persistentVolumeClaim:
+            claimName: uploads-pvc # Reclama el PVC uploads-pvc
+        - name: temp-uploads # Volumen para los archivos temporales
+          persistentVolumeClaim:
+            claimName: temp-uploads-pvc # Reclama el PVC temp-uploads-pvc
+        - name: sqlite-volume # Volumen para la base de datos sqlite
+          persistentVolumeClaim:
+            claimName: sqlite-pvc # Reclama el PVC sqlite-pvc

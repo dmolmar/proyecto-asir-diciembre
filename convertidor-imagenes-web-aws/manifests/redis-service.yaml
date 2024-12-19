@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service # Nombre del servicio
+spec:
+  selector:
+    app: redis # Selector para los pods del servicio
+  ports:
+  - protocol: TCP
+    port: 6379 # Puerto del servicio
+    targetPort: 6379 # Puerto del contenedor
