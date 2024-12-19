@@ -59,10 +59,6 @@
                             <option value="png">PNG</option>
                             <option value="jpg">JPG</option>
                             <option value="webp">WebP</option>
-                            <option value="avif">AVIF</option>
-                            <option value="bmp">BMP</option>
-                            <option value="tiff">TIFF</option>
-                            <option value="ico">ICO</option>
                         </select>
                     </div>
                 </div>
@@ -85,10 +81,15 @@
     </main>
     <footer>
         <div class="container">
-            <p>© 2023 Conversor de Imágenes</p>
+            <p>© 2024 David Alexánder Molina Martín</p>
         </div>
     </footer>
     <script>
+        // Constantes para límites (¡Asegúrate de que coincidan con las de tu backend!)
+        const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+        const MAX_PIXELS = 20000000; // 20 megapíxeles (aproximados)
+        const MAX_FILES = 20; // Máximo número de archivos
+
         // Obtiene los elementos del DOM
         const qualityInput = document.getElementById('quality');
         const qualityValue = document.getElementById('qualityValue');
@@ -285,25 +286,46 @@
                 });
             }
         }
-         // Función para manejar los archivos seleccionados o arrastrados
+        // Función para manejar los archivos seleccionados o arrastrados
         function handleFiles(files) {
             if (!isLoggedIn()) {
                 alert('Please log in to upload files.');
                 return;
             }
+            // Validar el número de archivos
+            if (files.length + Object.keys(uploadedFiles).length > MAX_FILES) {
+                alert(`No se pueden subir más de ${MAX_FILES} archivos.`);
+                return;
+            }
+
             for (let i = 0; i < files.length; i++) {
-                 // Verifica si el archivo excede el tamaño máximo
-                if (files[i].size > (10 * 1024 * 1024)) {
-                    alert('El archivo ' + files[i].name + ' excede el tamaño máximo de 10 MB.');
+                const file = files[i];
+
+                // Validar el tamaño del archivo
+                if (file.size > MAX_FILE_SIZE) {
+                    alert(`El archivo ${file.name} excede el tamaño máximo de ${formatFileSize(MAX_FILE_SIZE)}.`);
                     continue;
                 }
-                const file = files[i];
-                const key = generateFileKey(file);
-                 // Agrega el archivo a la lista solo si no existe previamente
-                if (!uploadedFiles[key]) {
-                    uploadedFiles[key] = file;
-                    displayFileItem(file);
-                }
+
+                // Validar el número de píxeles (aproximadamente)
+                const image = new Image();
+                image.onload = function() {
+                    if (image.width * image.height > MAX_PIXELS) {
+                        alert(`El archivo ${file.name} excede el número máximo de píxeles permitidos (${MAX_PIXELS}).`);
+                        return;
+                    }
+
+                    // Si pasa todas las validaciones, agregar el archivo
+                    const key = generateFileKey(file);
+                    if (!uploadedFiles[key]) {
+                        uploadedFiles[key] = file;
+                        displayFileItem(file);
+                    }
+                };
+                image.onerror = function() {
+                    alert(`No se pudo cargar la imagen ${file.name}. Asegúrate de que es un archivo de imagen válido.`);
+                };
+                image.src = URL.createObjectURL(file); // Usar URL.createObjectURL() para evitar leer todo el archivo
             }
         }
         // Función para subir los archivos y procesarlos

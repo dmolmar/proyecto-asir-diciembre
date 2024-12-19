@@ -43,7 +43,7 @@ os.environ['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.environ['TEMP_UPLOAD_FOLDER'] = TEMP_UPLOAD_FOLDER
 
 # Extensiones permitidas para los archivos de imagen
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'ico', 'avif', 'svg', 'psd', 'raw'}
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
 # Tamaño máximo permitido para los archivos en bytes
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 # Número máximo de píxeles permitidos para una imagen
@@ -58,7 +58,7 @@ os.makedirs(TEMP_UPLOAD_FOLDER, exist_ok=True)
 # Intervalo de limpieza de archivos antiguos (en segundos)
 CLEANUP_INTERVAL = 120  # 1 Minute
 # Clave secreta para JWT, obtenida de variables de entorno o una clave por defecto
-SECRET_KEY = os.getenv('SECRET_KEY', 'Arcueid')
+SECRET_KEY = os.getenv('SECRET_KEY', 'Proyecto')
 # Cantidad de RAM reservada en MB para evitar sobrecargas
 RESERVED_RAM_MB = 256
 
@@ -215,12 +215,12 @@ def convert():
         if len(files) > MAX_FILES:
             return jsonify({'error': f'Se ha excedido el número máximo de archivos ({MAX_FILES}).'}), 400
 
-        request_id = str(uuid.uuid4())  # Genera un ID único para esta solicitud
+        request_id = str(uuid.uuid4())
         job_ids = []
         uploaded_files_info = []
 
         try:
-            check_resource_availability()  # Verifica los recursos antes de encolar
+            check_resource_availability()
         except ResourceLimitExceeded as e:
              return jsonify({'error': str(e)}), 503
 
@@ -232,59 +232,51 @@ def convert():
             output_format = request.form.get(f'output_format-{file_key}', 'original').upper()
 
             if file and allowed_file(file.filename):
+                # Realiza solo verificaciones básicas de metadatos aquí
                 if file.content_length > MAX_FILE_SIZE:
                     return jsonify({'error': f'El archivo {file.filename} excede el tamaño máximo de {MAX_FILE_SIZE / (1024 * 1024)} MB.'}), 400
-                try:
-                    # Encola el trabajo en Redis
-                    job = q.enqueue(process_image, args=(output_format, quality, resolution_percentage, file.filename),
-                                    job_timeout=360,
-                                    result_ttl=360,
-                                    failure_ttl=360,
-                                    retry=Retry(max=3, interval=[10, 30, 60]))
-                    job.retries_left = 3 
-                    job_id = job.id
-                    job_ids.append(job_id)
-                    app.logger.info(f"Trabajo encolado: {job_id} para archivo: {file.filename}")
 
-                    # Crea un nombre de archivo temporal único usando job_id
-                    unique_filename = f"{job_id}.{file.filename.rsplit('.', 1)[1].lower()}"
-                    temp_path = os.path.join(TEMP_UPLOAD_FOLDER, unique_filename)
+                # Crea un nombre de archivo temporal único
+                temp_filename = str(uuid.uuid4())
+                temp_filepath = os.path.join(TEMP_UPLOAD_FOLDER, temp_filename)
+                file.save(temp_filepath)
+                app.logger.info(f"Archivo temporal guardado: {temp_filename}")
 
-                    # Guarda el archivo temporalmente
-                    file.seek(0) # Resetea el puntero del archivo
-                    file.save(temp_path)
+                # Encola el trabajo en Redis
+                job = q.enqueue(process_image, 
+                                args=(output_format, quality, resolution_percentage, file.filename, temp_filename),  # Pass temp_filename instead of path
+                                job_timeout=360,
+                                result_ttl=360,
+                                failure_ttl=360,
+                                retry=Retry(max=3, interval=[10, 30, 60]))
+                job.retries_left = 3
+                job_id = job.id
+                job_ids.append(job_id)
+                app.logger.info(f"Trabajo encolado: {job_id} para archivo: {file.filename}")
 
-                    # Guarda el mapeo entre ID de trabajo y nombre de archivo original en Redis
-                    redis_conn.set(f"job:{job_id}:filename", file.filename)
-                    redis_conn.set(f"job:{job_id}:filekey", file_key)
-                    redis_conn.set(f"job:{job_id}:temppath", temp_path)
+                # Guarda la información necesaria en Redis
+                redis_conn.set(f"job:{job_id}:filename", file.filename)
+                redis_conn.set(f"job:{job_id}:filekey", file_key)
+                redis_conn.set(f"job:{job_id}:temppath", temp_filepath) # Now we are saving the path
 
-                    image = Image.open(temp_path)
-                    if image.width * image.height > MAX_PIXELS:
-                        os.remove(temp_path)
-                        return jsonify({'error': f'El archivo {file.filename} excede el tamaño máximo de {MAX_PIXELS / 1000000} MP.'}), 400
-
-                    uploaded_files_info.append({
-                        'key': file_key,
-                        'name': file.filename,
-                        'extension': file.filename.rsplit('.', 1)[1].lower(),
-                        'resolution': f"{image.width}x{image.height}",
-                        'size': file.content_length,
-                    })
-                except Exception as e:
-                    app.logger.error(f"Error al procesar {file.filename}: {e}")
-                    return jsonify({'error': f"Error al procesar {file.filename}: {e}"}), 500
+                # La información detallada de la imagen se procesará en el worker
+                uploaded_files_info.append({
+                    'key': file_key,
+                    'name': file.filename,
+                    'size': file.content_length,
+                    'status': 'queued'
+                })
 
         # Guarda los nombres de los trabajos y el ID de la solicitud en Redis
         redis_conn.set(f"request:{request_id}:jobs", ",".join(job_ids))
         redis_conn.set(f"request:{request_id}:total", len(job_ids))
         redis_conn.set(f"request:{request_id}:completed", 0)
 
-        # Crea un diccionario de resultados que incluye los ID de los trabajos
         results = {job_id: {'status': 'processing'} for job_id in job_ids}
 
         app.logger.info(f"ID de solicitud: {request_id}, Nombres de trabajo: {job_ids}")
         return jsonify({'request_id': request_id, 'uploaded_files_info': uploaded_files_info, 'results': results})
+
     except Exception as e:
         app.logger.error(f"Error inesperado en /convert: {e}")
         return jsonify({'error': 'Ocurrió un error inesperado en el servidor.'}), 500
@@ -345,12 +337,26 @@ def get_file(job_id):
         if not os.path.exists(file_path):
             abort(404, description=f"Archivo no encontrado: {output_filename}")
 
-        return send_file(file_path, mimetype='image/jpeg')
+        # Determine mimetype based on file extension
+        file_extension = os.path.splitext(output_filename)[1].lower()
+        mimetype = get_mimetype(file_extension)
+
+        return send_file(file_path, mimetype=mimetype)
     except NoSuchJobError:
         abort(404, description="Trabajo no encontrado")
     except Exception as e:
         app.logger.error(f"Error al obtener el archivo: {e}")
         abort(500, description=f"Error al obtener el archivo: {e}")
+
+def get_mimetype(file_extension):
+    """Helper function to determine the mimetype based on file extension."""
+    mimetypes = {
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.webp': 'image/webp',
+    }
+    return mimetypes.get(file_extension, 'application/octet-stream')  # Default to octet-stream if unknown
 
 @app.route('/progress/<request_id>')
 @requires_auth
