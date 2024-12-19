@@ -1,12 +1,14 @@
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: temp-uploads-pv  # Nombre del PersistentVolume
+  name: temp-uploads-pv
 spec:
-  storageClassName: local-storage # Clase de almacenamiento
+  storageClassName: nfs
   capacity:
-    storage: 1Gi # Capacidad del volumen
+    storage: 1Gi
   accessModes:
-    - ReadWriteMany # Modo de acceso
-  hostPath:
-    path: /data/temp-uploads  # Ruta en el host
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  nfs:
+    server: 10.0.0.1
+    path: /home/alexander/proyecto-diciembre/convertidor-imagenes-web/data/nfs/temp-uploads

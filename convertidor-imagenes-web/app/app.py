@@ -25,19 +25,6 @@ from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 import sqlite3
 
-from opentelemetry import trace, metrics
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
-from opentelemetry.instrumentation.flask import FlaskInstrumentor
-from opentelemetry.instrumentation.requests import RequestsInstrumentor
-from opentelemetry.instrumentation.redis import RedisInstrumentor
-from opentelemetry.instrumentation.wsgi import collect_request_attributes
-
 from tasks import process_image
 
 # Inicialización de la aplicación Flask
@@ -62,62 +49,34 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 # Número máximo de píxeles permitidos para una imagen
 MAX_PIXELS = 20000000  # 20 megapíxeles
 # Número máximo de archivos permitidos por solicitud
-MAX_FILES = 50
+MAX_FILES = 20
 # Configuración de la carpeta de subida
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 # Crea las carpetas de subida y temporales si no existen
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(TEMP_UPLOAD_FOLDER, exist_ok=True)  
+os.makedirs(TEMP_UPLOAD_FOLDER, exist_ok=True)
 # Intervalo de limpieza de archivos antiguos (en segundos)
-CLEANUP_INTERVAL = 60  # 1 Minute
+CLEANUP_INTERVAL = 120  # 1 Minute
 # Clave secreta para JWT, obtenida de variables de entorno o una clave por defecto
 SECRET_KEY = os.getenv('SECRET_KEY', 'Arcueid')
 # Cantidad de RAM reservada en MB para evitar sobrecargas
 RESERVED_RAM_MB = 256
 
 # Configuración de la base de datos SQLite
-DATABASE_FILE = '/data/sqlite/images.db'  
+DATABASE_FILE = '/data/sqlite/images.db'
 DATABASE_URL = f'sqlite:///{DATABASE_FILE}'
 
 # Conexión global a la base de datos
 db_conn = None
 
 # Configuración de Redis (actualizado para Kubernetes service)
-redis_conn = redis.Redis(host='redis-service', port=6379)  
+redis_conn = redis.Redis(host='redis-service', port=6379)
 # Cola de trabajos para el procesamiento de imágenes
 q = Queue(connection=redis_conn, default_timeout=360)
 
 # Cliente de la API de Kubernetes
-config.load_incluster_config()  
+config.load_incluster_config()
 batch_v1 = client.BatchV1Api()
-
-# Configuración de OpenTelemetry
-resource = Resource.create(attributes={"service.name": "images-api-service"})
-
-# Configuración del proveedor de rastreo
-trace_provider = TracerProvider(resource=resource)
-otlp_trace_exporter = OTLPSpanExporter(endpoint="opentelemetry-collector-service:4317", insecure=True)
-trace_provider.add_span_processor(BatchSpanProcessor(otlp_trace_exporter))
-trace.set_tracer_provider(trace_provider)
-tracer = trace.get_tracer(__name__)
-
-# Configuración del proveedor de métricas
-metric_exporter = OTLPMetricExporter(endpoint="opentelemetry-collector-service:4318")
-metric_reader = PeriodicExportingMetricReader(metric_exporter)
-meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
-metrics.set_meter_provider(meter_provider)
-meter = metrics.get_meter(__name__)
-
-# Instrumentaciones de OpenTelemetry
-FlaskInstrumentor().instrument_app(app, excluded_urls="health")  # Excluye las comprobaciones de salud
-RequestsInstrumentor().instrument()
-RedisInstrumentor().instrument()
-
-# Métrica personalizada para contar las solicitudes
-request_counter = meter.create_counter(
-    "requests_total",
-    description="Total number of requests"
-)
 
 def get_db_connection():
     """Establece y devuelve una conexión a la base de datos SQLite."""
@@ -125,7 +84,7 @@ def get_db_connection():
     if db_conn is None:
         try:
             # Conecta a la base de datos y permite el uso de la conexión entre threads
-            db_conn = sqlite3.connect(DATABASE_FILE, check_same_thread=False) 
+            db_conn = sqlite3.connect(DATABASE_FILE, check_same_thread=False)
             # Crea la tabla de usuarios si no existe
             db_conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -243,8 +202,7 @@ def index():
 @requires_auth
 def convert():
     """Ruta para procesar y convertir imágenes. Requiere autenticación."""
-    with tracer.start_as_current_span("convert-route"):
-        request_counter.add(1, {"endpoint": "/convert"})
+    try:
         if 'files' not in request.files:
             return jsonify({'error': 'No se han subido archivos.'}), 400
 
@@ -283,6 +241,7 @@ def convert():
                                     result_ttl=360,
                                     failure_ttl=360,
                                     retry=Retry(max=3, interval=[10, 30, 60]))
+                    job.retries_left = 3 
                     job_id = job.id
                     job_ids.append(job_id)
                     app.logger.info(f"Trabajo encolado: {job_id} para archivo: {file.filename}")
@@ -326,124 +285,128 @@ def convert():
 
         app.logger.info(f"ID de solicitud: {request_id}, Nombres de trabajo: {job_ids}")
         return jsonify({'request_id': request_id, 'uploaded_files_info': uploaded_files_info, 'results': results})
+    except Exception as e:
+        app.logger.error(f"Error inesperado en /convert: {e}")
+        return jsonify({'error': 'Ocurrió un error inesperado en el servidor.'}), 500
 
 @app.route('/download/<job_id>')
 @requires_auth
 def download_file(job_id):
     """Ruta para descargar un archivo procesado. Requiere autenticación."""
-    with tracer.start_as_current_span("download-file-route"):
-        try:
-            job = q.fetch_job(job_id)
-            if job is None:
-                abort(404, description="Trabajo no encontrado")
-            if job.is_failed:
-                abort(500, description=f"El trabajo falló: {job.exc_info}")
-            if not job.is_finished:
-                abort(400, description="El trabajo aún no ha terminado")
-
-            output_filename = job.result
-            if not output_filename:
-                abort(500, description="No se encontró el nombre del archivo de salida")
-
-            file_path = os.path.join(UPLOAD_FOLDER, output_filename)
-            if not os.path.exists(file_path):
-                abort(404, description=f"Archivo no encontrado: {output_filename}")
-
-            response = send_file(file_path, as_attachment=True, download_name=output_filename)
-            return response
-        except NoSuchJobError:
+    try:
+        job = q.fetch_job(job_id)
+        if job is None:
             abort(404, description="Trabajo no encontrado")
-        except Exception as e:
-            app.logger.error(f"Error al descargar el archivo: {e}")
-            abort(500, description=f"Error al descargar el archivo: {e}")
+        if job.is_failed:
+            abort(500, description=f"El trabajo falló: {job.exc_info}")
+        if not job.is_finished:
+            abort(400, description="El trabajo aún no ha terminado")
+
+        # Obtiene el nombre del archivo de salida y el nombre original
+        output_filename = job.result
+        original_filename = redis_conn.get(f"job:{job_id}:original_filename").decode()
+
+        if not output_filename:
+            abort(500, description="No se encontró el nombre del archivo de salida")
+
+        file_path = os.path.join(UPLOAD_FOLDER, output_filename)
+        if not os.path.exists(file_path):
+            abort(404, description=f"Archivo no encontrado: {output_filename}")
+
+        # Usa el nombre original para la descarga
+        response = send_file(file_path, as_attachment=True, download_name=original_filename)
+        return response
+
+    except NoSuchJobError:
+        abort(404, description="Trabajo no encontrado")
+    except Exception as e:
+        app.logger.error(f"Error al descargar el archivo: {e}")
+        abort(500, description=f"Error al descargar el archivo: {e}")
 
 @app.route('/file/<job_id>')
 @requires_auth
 def get_file(job_id):
-     """Ruta para obtener un archivo procesado como imagen para mostrar en el navegador. Requiere autenticación."""
-     with tracer.start_as_current_span("get-file-route"):
-        try:
-            job = q.fetch_job(job_id)
-            if job is None:
-                abort(404, description="Trabajo no encontrado")
-            if job.is_failed:
-                abort(500, description=f"El trabajo falló: {job.exc_info}")
-            if not job.is_finished:
-                abort(400, description="El trabajo aún no ha terminado")
-
-            output_filename = job.result
-            if not output_filename:
-                abort(500, description="No se encontró el nombre del archivo de salida")
-
-            file_path = os.path.join(UPLOAD_FOLDER, output_filename)
-
-            if not os.path.exists(file_path):
-                abort(404, description=f"Archivo no encontrado: {output_filename}")
-            
-            return send_file(file_path, mimetype='image/jpeg')
-        except NoSuchJobError:
+    """Ruta para obtener un archivo procesado como imagen para mostrar en el navegador. Requiere autenticación."""
+    try:
+        job = q.fetch_job(job_id)
+        if job is None:
             abort(404, description="Trabajo no encontrado")
-        except Exception as e:
-            app.logger.error(f"Error al obtener el archivo: {e}")
-            abort(500, description=f"Error al obtener el archivo: {e}")
+        if job.is_failed:
+            abort(500, description=f"El trabajo falló: {job.exc_info}")
+        if not job.is_finished:
+            abort(400, description="El trabajo aún no ha terminado")
+
+        output_filename = job.result
+        if not output_filename:
+            abort(500, description="No se encontró el nombre del archivo de salida")
+
+        file_path = os.path.join(UPLOAD_FOLDER, output_filename)
+
+        if not os.path.exists(file_path):
+            abort(404, description=f"Archivo no encontrado: {output_filename}")
+
+        return send_file(file_path, mimetype='image/jpeg')
+    except NoSuchJobError:
+        abort(404, description="Trabajo no encontrado")
+    except Exception as e:
+        app.logger.error(f"Error al obtener el archivo: {e}")
+        abort(500, description=f"Error al obtener el archivo: {e}")
 
 @app.route('/progress/<request_id>')
 @requires_auth
 def progress(request_id):
     """Ruta para obtener el progreso de la conversión. Requiere autenticación."""
-    with tracer.start_as_current_span("progress-route"):
-        try:
-            job_ids_str = redis_conn.get(f"request:{request_id}:jobs")
-            if job_ids_str is None:
-                return jsonify({'error': 'ID de solicitud no encontrado.'}), 404
+    try:
+        job_ids_str = redis_conn.get(f"request:{request_id}:jobs")
+        if job_ids_str is None:
+            return jsonify({'error': 'ID de solicitud no encontrado.'}), 404
 
-            job_ids = job_ids_str.decode().split(",")
-            total_jobs = len(job_ids)
-            completed_jobs = 0
-            failed_jobs = 0
-            results = {}
+        job_ids = job_ids_str.decode().split(",")
+        total_jobs = len(job_ids)
+        completed_jobs = 0
+        failed_jobs = 0
+        results = {}
 
-            for job_id in job_ids:
-                try:
-                    job = q.fetch_job(job_id)
-                    if job is None:
-                        failed_jobs += 1
-                        results[job_id] = {'status': 'not found'}
-                        continue
-
-                    if job.is_finished:
-                        completed_jobs += 1
-                        # Obtiene el nombre de archivo original de Redis
-                        original_filename = redis_conn.get(f"job:{job_id}:filename").decode()
-                        file_key = redis_conn.get(f"job:{job_id}:filekey").decode()
-                        results[job_id] = {'status': 'finished', 'result': job.result, 'original_filename': original_filename, 'filekey': file_key}
-                    elif job.is_failed:
-                        failed_jobs += 1
-                        results[job_id] = {'status': 'failed', 'error': job.exc_info}
-                    else:
-                        results[job_id] = {'status': 'processing'}
-                except NoSuchJobError:
+        for job_id in job_ids:
+            try:
+                job = q.fetch_job(job_id)
+                if job is None:
                     failed_jobs += 1
                     results[job_id] = {'status': 'not found'}
-                except redis.exceptions.ConnectionError as e:
-                    app.logger.error(f"Error de conexión a Redis: {e}")
-                    return jsonify({'error': 'Error de conexión a Redis'}), 500
+                    continue
 
-            all_finished = completed_jobs + failed_jobs == total_jobs
+                if job.is_finished:
+                    completed_jobs += 1
+                    # Obtiene el nombre de archivo original de Redis
+                    original_filename = redis_conn.get(f"job:{job_id}:filename").decode()
+                    file_key = redis_conn.get(f"job:{job_id}:filekey").decode()
+                    results[job_id] = {'status': 'finished', 'result': job.result, 'original_filename': original_filename, 'filekey': file_key}
+                elif job.is_failed:
+                    failed_jobs += 1
+                    results[job_id] = {'status': 'failed', 'error': job.exc_info}
+                else:
+                    results[job_id] = {'status': 'processing'}
+            except NoSuchJobError:
+                failed_jobs += 1
+                results[job_id] = {'status': 'not found'}
+            except redis.exceptions.ConnectionError as e:
+                app.logger.error(f"Error de conexión a Redis: {e}")
+                return jsonify({'error': 'Error de conexión a Redis'}), 500
 
-            progress_data = {
-                'total': total_jobs,
-                'completed': completed_jobs,
-                'failed': failed_jobs,
-                'all_finished': all_finished,
-                'results': results
-            }
+        all_finished = completed_jobs + failed_jobs == total_jobs
 
-            return jsonify(progress_data)
+        progress_data = {
+            'total': total_jobs,
+            'completed': completed_jobs,
+            'failed': failed_jobs,
+            'all_finished': all_finished,
+            'results': results
+        }
 
-        except Exception as e:
-            app.logger.error(f"Ocurrió un error inesperado: {e}")
-            return jsonify({'error': 'Ocurrió un error inesperado en el servidor.'}), 500
+        return jsonify(progress_data)
+    except Exception as e:
+        app.logger.error(f"Ocurrió un error inesperado: {e}")
+        return jsonify({'error': 'Ocurrió un error inesperado en el servidor.'}), 500
 
 @app.errorhandler(Exception)
 def handle_unexpected_error(error):
@@ -485,7 +448,7 @@ def authenticate():
 
     if not username or not password:
         return jsonify({'error': 'Se requieren nombre de usuario y contraseña'}), 400
-    
+
     try:
         conn = get_db_connection()
         cur = conn.cursor() # Crea un objeto cursor

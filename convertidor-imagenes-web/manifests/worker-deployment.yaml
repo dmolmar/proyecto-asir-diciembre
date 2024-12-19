@@ -1,10 +1,10 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: worker-deployment # Nombre del deployment
-  namespace: convertidor-imagenes # Namespace
+  name: worker-deployment
+  namespace: convertidor-imagenes
 spec:
-  replicas: 1
+  replicas: 9
   selector:
     matchLabels:
       app: worker
@@ -27,33 +27,33 @@ spec:
               topologyKey: "kubernetes.io/hostname"
       containers:
       - name: worker-container
-        image: dmolmar/images-api:latest # Imagen del contenedor del worker
+        image: dmolmar/images-api:latest
         imagePullPolicy: Always
-        command: ["python", "worker.py"] # Comando de inicio del worker
+        command: ["python", "worker.py"]
         env:
         - name: SECRET_KEY
           valueFrom:
             secretKeyRef:
               name: app-secrets
-              key: secret-key # Clave secreta del secret app-secrets
+              key: secret-key
         - name: REDIS_URL
-          value: "redis://redis-service:6379" # URL de Redis
+          value: "redis://redis-service:6379"
         resources:
           requests:
-            cpu: "500m"  # Solicitud mínima de CPU
-            memory: "512Mi" # Solicitud mínima de memoria
+            cpu: "500m"
+            memory: "512Mi"
           limits:
-            cpu: "750m"  # Límite máximo de CPU
-            memory: "1Gi" # Límite máximo de memoria
+            cpu: "750m"
+            memory: "1Gi"
         volumeMounts:
         - name: uploads
-          mountPath: /data/uploads # Monta el volumen de uploads
+          mountPath: /data/uploads
         - name: temp-uploads
-          mountPath: /data/temp-uploads  # Monta el volumen de temporales
+          mountPath: /data/temp-uploads
       volumes:
       - name: uploads
         persistentVolumeClaim:
-          claimName: uploads-pvc # PVC para archivos de subida
+          claimName: uploads-pvc
       - name: temp-uploads
         persistentVolumeClaim:
-          claimName: temp-uploads-pvc  # PVC para archivos temporales
+          claimName: temp-uploads-pvc
